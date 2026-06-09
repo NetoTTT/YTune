@@ -1,60 +1,69 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { LogicalSize } from "@tauri-apps/api/dpi";
   import { onMount, onDestroy } from "svelte";
 
-  const COMPACT_H  = 195;
-  const QUEUE_HEAD = 40;
-  const ITEM_H     = 44;
-  const MAX_ITEMS  = 5;
-  const WIDTH      = 340;
+  const MAX_ITEMS = 5;
 
   let title       = $state("Nothing playing");
   let artist      = $state("");
+  let thumbnail   = $state("");
+  let liked       = $state(false);
+  let disliked    = $state(false);
   let playing     = $state(false);
+  let volume      = $state(100);
+  let prevVolume  = 100;
   let currentTime = $state(0);
   let duration    = $state(0);
   let queue       = $state([]);
   let showQueue   = $state(false);
-  let isSeeking   = $state(false);
-  let seekValue   = $state(0);
+  let showVolume  = $state(false);
+  let isSeeking      = $state(false);
+  let seekValue      = $state(0);
+  let isVolAdjusting = false;
+  let seekTimeout;
+  let volTimeout;
   let unlisten;
 
-  $effect(() => {
-    if (!isSeeking) seekValue = currentTime;
-  });
-
-  $effect(() => {
-    resizeWindow();
-  });
-
-  async function resizeWindow() {
-    try {
-      const items = Math.min(queue.length, MAX_ITEMS);
-      const h = showQueue && items > 0
-        ? COMPACT_H + QUEUE_HEAD + items * ITEM_H
-        : COMPACT_H;
-      const win = getCurrentWindow();
-      await win.setSize(new LogicalSize(WIDTH, h));
-    } catch {}
-  }
 
   onMount(async () => {
     unlisten = await listen("player_state_changed", (e) => {
       const p = e.payload;
-      title   = p.title  || "Nothing playing";
-      artist  = p.artist || "";
-      playing = p.playing;
-      duration = p.duration || 0;
-      queue   = p.queue || [];
-      if (!isSeeking) currentTime = p.currentTime || 0;
-      // Auto-open queue if a playlist is detected and the popup is fresh
+      const newTitle   = p.title    || "Nothing playing";
+      const newDur     = p.duration || 0;
+      const newTime    = p.currentTime || 0;
+
+      // Detect song change by title, OR by a big duration jump, OR by time
+      // jumping backward without a user seek (covers same-title back-to-back songs)
+      const titleChanged    = newTitle !== title;
+      const durationChanged = duration > 0 && Math.abs(newDur - duration) > 5;
+      const timeJumped      = !isSeeking && currentTime > 5 && newTime < currentTime - 5;
+      const songChanged     = titleChanged || durationChanged || timeJumped;
+
+      if (songChanged) {
+        isSeeking = false;
+        clearTimeout(seekTimeout);
+        currentTime = 0;
+        seekValue   = 0;
+        duration    = 0;
+      } else if (!isSeeking) {
+        currentTime = newTime;
+        seekValue   = newTime;
+      }
+
+      title     = newTitle;
+      artist    = p.artist    || "";
+      thumbnail = p.thumbnail || "";
+      liked     = p.liked     ?? false;
+      disliked  = p.disliked  ?? false;
+      playing   = p.playing;
+      if (!isVolAdjusting) volume = p.volume ?? volume;
+      if (!songChanged) duration = newDur;
+      queue     = p.queue     || [];
     });
   });
 
-  onDestroy(() => unlisten?.());
+  onDestroy(() => { unlisten?.(); clearTimeout(seekTimeout); clearTimeout(volTimeout); });
 
   function fmt(secs) {
     if (!secs || isNaN(secs)) return "0:00";
@@ -67,10 +76,48 @@
   const openApp  = () => { invoke("show_main_window"); invoke("hide_tray_popup"); };
   const close    = () => invoke("hide_tray_popup");
 
-  function onSeekInput(e)  { isSeeking = true; seekValue = +e.target.value; }
-  function onSeekCommit(e) { isSeeking = false; invoke("player_seek", { position: +e.target.value }); }
+  function onSeekInput(e) { isSeeking = true; seekValue = +e.target.value; }
+  function onSeekCommit(e) {
+    const pos = +e.target.value;
+    invoke("player_seek", { position: pos });
+    // Stay in seeking mode for 1.5s so stale poll updates don't snap the bar back
+    // before YTM has applied the new position
+    clearTimeout(seekTimeout);
+    seekTimeout = setTimeout(() => { isSeeking = false; }, 1500);
+  }
 
-  function toggleQueue() { showQueue = !showQueue; }
+  const BASE_H   = 205;
+  const VOL_H    = 24;
+  const QUEUE_H  = 210;
+
+  function syncSize() {
+    const h = BASE_H + (showVolume ? VOL_H : 0) + (showQueue ? QUEUE_H : 0);
+    invoke("resize_popup", { height: h });
+  }
+
+  function onVolumeInput(e) {
+    volume = +e.target.value;
+    isVolAdjusting = true;
+    clearTimeout(volTimeout);
+    volTimeout = setTimeout(() => { isVolAdjusting = false; }, 2000);
+    invoke("player_volume", { volume });
+  }
+
+  function toggleMute() {
+    if (volume > 0) { prevVolume = volume; volume = 0; }
+    else             { volume = prevVolume || 100; }
+    invoke("player_volume", { volume });
+  }
+
+  function toggleVolume() {
+    showVolume = !showVolume;
+    syncSize();
+  }
+
+  function toggleQueue() {
+    showQueue = !showQueue;
+    syncSize();
+  }
 
   // Progress percentage for CSS gradient on the range track
   const progressPct = $derived(
@@ -100,8 +147,19 @@
 
   <!-- ── Song info ── -->
   <section class="info">
-    <p class="title" title={title}>{title}</p>
-    <p class="artist" title={artist}>{artist}</p>
+    {#if thumbnail}
+      <img class="thumb" src={thumbnail} alt="" draggable="false" />
+    {:else}
+      <div class="thumb thumb-placeholder">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" opacity="0.3">
+          <path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z"/>
+        </svg>
+      </div>
+    {/if}
+    <div class="info-text">
+      <p class="title" title={title}>{title}</p>
+      <p class="artist" title={artist}>{artist}</p>
+    </div>
   </section>
 
   <!-- ── Progress bar ── -->
@@ -151,15 +209,87 @@
       </svg>
     </button>
 
-    {#if queue.length > 1}
-      <button class="queue-toggle" onclick={toggleQueue} aria-label="Toggle queue" title="Queue">
+    <div class="secondary-controls">
+      <button
+        class="like-btn"
+        class:active={liked}
+        onclick={() => control("like")}
+        aria-label="Like"
+        title="Like"
+      >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h12v2H3z"/>
+          <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/>
         </svg>
-        <span class="queue-count">{queue.length}</span>
       </button>
-    {/if}
+      <button
+        class="like-btn dislike-btn"
+        class:active={disliked}
+        onclick={() => control("dislike")}
+        aria-label="Dislike"
+        title="Dislike"
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/>
+        </svg>
+      </button>
+      <button
+        class="like-btn"
+        class:active={showVolume}
+        onclick={toggleVolume}
+        aria-label="Volume"
+        title="Volume"
+      >
+        {#if volume === 0}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+          </svg>
+        {:else if volume < 50}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/>
+          </svg>
+        {:else}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+          </svg>
+        {/if}
+      </button>
+      {#if queue.length > 1}
+        <button class="queue-toggle" onclick={toggleQueue} aria-label="Toggle queue" title="Queue">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h12v2H3z"/>
+          </svg>
+          <span class="queue-count">{queue.length}</span>
+        </button>
+      {/if}
+    </div>
   </section>
+
+  <!-- ── Volume (expandable) ── -->
+  {#if showVolume}
+    <section class="volume-section">
+      <button class="vol-mute" onclick={toggleMute} aria-label={volume === 0 ? "Unmute" : "Mute"} title={volume === 0 ? "Unmute" : "Mute"}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+          {#if volume === 0}
+            <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+          {:else}
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+          {/if}
+        </svg>
+      </button>
+      <input
+        type="range"
+        class="vol-range"
+        min="0"
+        max="100"
+        step="1"
+        value={volume}
+        style="--pct: {volume}%"
+        oninput={onVolumeInput}
+        aria-label="Volume"
+      />
+      <span class="vol-pct">{volume}%</span>
+    </section>
+  {/if}
 
   <!-- ── Queue ── -->
   {#if showQueue && queue.length > 1}
@@ -181,10 +311,16 @@
 
 <style>
   :global(*) { box-sizing: border-box; margin: 0; padding: 0; }
-  :global(body) { background: transparent; overflow: hidden; }
+  :global(html), :global(body) {
+    background: #1c1c1e;
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+  }
 
   main {
-    width: 340px;
+    width: 100%;
+    min-height: 100%;
     background: #1c1c1e;
     color: #f5f5f7;
     border-radius: 14px;
@@ -224,14 +360,26 @@
   .header-actions .close:hover { color: #ff453a; }
 
   /* Song info */
-  .info { overflow: hidden; }
+  .info {
+    display: flex; align-items: center; gap: 10px; overflow: hidden;
+  }
+  .thumb {
+    width: 52px; height: 52px; border-radius: 7px;
+    object-fit: cover; flex-shrink: 0;
+  }
+  .thumb-placeholder {
+    background: rgba(255,255,255,0.06);
+    display: flex; align-items: center; justify-content: center;
+    color: #f5f5f7;
+  }
+  .info-text { flex: 1; overflow: hidden; }
   .title {
-    font-size: 14px; font-weight: 600;
+    font-size: 13px; font-weight: 600;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     line-height: 1.3;
   }
   .artist {
-    font-size: 12px; color: #8e8e93; margin-top: 2px;
+    font-size: 11px; color: #8e8e93; margin-top: 2px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 
@@ -241,6 +389,7 @@
 
   input[type=range] {
     -webkit-appearance: none;
+    appearance: none;
     width: 100%; height: 3px; border-radius: 3px; outline: none; cursor: pointer;
     background: linear-gradient(
       to right,
@@ -249,12 +398,20 @@
       rgba(255,255,255,0.12) var(--pct),
       rgba(255,255,255,0.12) 100%
     );
+    border: none;
+    padding: 0;
+    margin: 0;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 3px; border-radius: 3px; background: transparent;
   }
   input[type=range]::-webkit-slider-thumb {
     -webkit-appearance: none;
+    appearance: none;
     width: 11px; height: 11px; border-radius: 50%;
     background: #fff; box-shadow: 0 0 4px rgba(0,0,0,0.4);
     transition: transform 0.1s;
+    margin-top: -4px;
   }
   input[type=range]:hover::-webkit-slider-thumb { transform: scale(1.3); }
 
@@ -283,12 +440,45 @@
     background: linear-gradient(135deg,rgba(192,38,211,0.35),rgba(59,130,246,0.35));
   }
 
+  .secondary-controls {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 0;
+  }
+  .like-btn { color: #636366; padding: 6px; }
+  .like-btn:hover { color: #f5f5f7; }
+  .like-btn.active { color: #c026d3; }
+  .dislike-btn.active { color: #8e8e93; }
+
   .queue-toggle {
-    margin-left: auto; color: #636366;
+    color: #636366;
     display: flex; align-items: center; gap: 4px;
   }
   .queue-toggle:hover { color: #f5f5f7; }
   .queue-count { font-size: 10px; font-weight: 600; }
+
+  /* Volume */
+  .volume-section {
+    display: flex; align-items: center; gap: 7px; padding: 0 1px;
+  }
+  .vol-mute {
+    color: #636366; padding: 3px; flex-shrink: 0; background: none; border: none;
+    cursor: pointer; display: flex; align-items: center; border-radius: 4px;
+    transition: color 0.15s;
+  }
+  .vol-mute:hover { color: #f5f5f7; }
+  .vol-range {
+    flex: 1; height: 3px;
+    background: linear-gradient(
+      to right,
+      #a855f7 0%,
+      #3b82f6 var(--pct),
+      rgba(255,255,255,0.12) var(--pct),
+      rgba(255,255,255,0.12) 100%
+    );
+  }
+  .vol-pct {
+    font-size: 10px; color: #636366; width: 28px; text-align: right; flex-shrink: 0;
+  }
 
   /* Queue section */
   .queue {
