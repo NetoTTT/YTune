@@ -60,3 +60,7 @@ To enable Discord Rich Presence, create an application at the [Discord Developer
 | Frontend | Svelte 5 + SvelteKit |
 | Bundler | Vite |
 | Discord RPC | discord-rich-presence |
+
+## Credits
+
+Developed with assistance from [Claude](https://claude.ai) (Anthropic).
