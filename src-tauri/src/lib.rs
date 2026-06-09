@@ -6,6 +6,7 @@ use tauri::{
 };
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 
+
 const DISCORD_CLIENT_ID: &str = "YOUR_CLIENT_ID_HERE";
 
 const INJECT_JS: &str = r#"
@@ -33,6 +34,61 @@ const INJECT_JS: &str = r#"
             if (vid) { vid.volume = Math.max(0, Math.min(1, v / 100)); vid.muted = (v === 0); }
         },
     };
+
+    // ── Image processing (runs here in music.youtube.com context) ──────
+    // fetch() from music.youtube.com works fine against Google CDN (same company,
+    // CORS allowed). The popup at localhost:1420 cannot do this — CORS is blocked
+    // and the failure poisons the browser cache, breaking even plain <img> display.
+    // One fetch produces both: a data URI for display and the dominant palette color.
+    let _palette   = { url: '', h: 280, s: 65 };
+    let _thumbData = { url: '', data: '' };
+
+    async function processImage(url) {
+        if (!url || url === _palette.url) return;
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) return;
+            const blobUrl = URL.createObjectURL(await resp.blob());
+
+            // Draw to 60×60 canvas — good enough for display (popup thumb is 52px)
+            // and for palette sampling (more pixels = more accurate than 20×20)
+            const SIZE = 60;
+            const c = document.createElement('canvas');
+            c.width = c.height = SIZE;
+            const ctx = c.getContext('2d');
+            await new Promise((res, rej) => {
+                const img = new Image();
+                img.onload = () => { ctx.drawImage(img, 0, 0, SIZE, SIZE); URL.revokeObjectURL(blobUrl); res(); };
+                img.onerror = () => { URL.revokeObjectURL(blobUrl); rej(); };
+                img.src = blobUrl;
+            });
+
+            // Data URI for popup display — avoids any CORS issue on the popup side
+            _thumbData = { url, data: c.toDataURL('image/jpeg', 0.85) };
+
+            // Palette from canvas pixels
+            const { data } = ctx.getImageData(0, 0, SIZE, SIZE);
+            const bkts = Array.from({length:12}, () => ({n:0,h:0,s:0}));
+            for (let i = 0; i < data.length; i += 4) {
+                const r=data[i]/255, g=data[i+1]/255, b=data[i+2]/255;
+                const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+                const l=(mx+mn)/2;
+                if (mx===mn) continue;
+                const dv=mx-mn;
+                const s=l>0.5?dv/(2-mx-mn):dv/(mx+mn);
+                if (s<0.25||l<0.12||l>0.88) continue;
+                let h=0;
+                if(mx===r) h=((g-b)/dv+(g<b?6:0))/6;
+                else if(mx===g) h=((b-r)/dv+2)/6;
+                else h=((r-g)/dv+4)/6;
+                const bk=Math.min(Math.floor(h*12),11);
+                bkts[bk].n++;
+                if(s>bkts[bk].s){bkts[bk].h=h*360;bkts[bk].s=s;}
+            }
+            const dom = bkts.reduce((a,b)=>b.n>a.n?b:a);
+            _palette = { url, h: dom.n>0 ? Math.round(dom.h) : 280, s: dom.n>0 ? Math.round(dom.s*100) : 65 };
+        } catch(e) { /* keep previous data on error; will retry next time URL changes */ }
+    }
 
     function getQueue() {
         const items = document.querySelectorAll('ytmusic-player-queue-item');
@@ -88,15 +144,18 @@ const INJECT_JS: &str = r#"
     function getState() {
         const video = getActiveVideo();
         const times = getDisplayedTimes();
+        const thumb = document.querySelector('ytmusic-player-bar ytmusic-thumbnail img')?.src
+                   || document.querySelector('ytmusic-player-bar img[src*="googleusercontent"]')?.src
+                   || '';
+        // Fire-and-forget; updates _palette and _thumbData async for next poll cycle
+        if (thumb && thumb !== _palette.url) processImage(thumb);
         return {
             title:       document.querySelector('.title.ytmusic-player-bar')?.title
                       || document.querySelector('.title.ytmusic-player-bar')?.textContent?.trim()
                       || '',
             artist:      document.querySelector('.subtitle.ytmusic-player-bar')?.textContent?.trim()
                       || '',
-            thumbnail:   document.querySelector('ytmusic-player-bar ytmusic-thumbnail img')?.src
-                      || document.querySelector('ytmusic-player-bar img[src*="googleusercontent"]')?.src
-                      || '',
+            thumbnail:   thumb,
             liked:       document.querySelector('ytmusic-like-button-renderer .like button')
                            ?.getAttribute('aria-pressed') === 'true',
             disliked:    document.querySelector('ytmusic-like-button-renderer .dislike button')
@@ -110,7 +169,60 @@ const INJECT_JS: &str = r#"
             currentTime: times.cur || 0,
             duration:    times.dur || 0,
             queue:       getQueue(),
+            paletteH:      _palette.h,
+            paletteS:      _palette.s,
+            thumbnailData: _thumbData.url === thumb ? _thumbData.data : '',
         };
+    }
+
+    // ── Web Audio analyser ────────────────────────────────────────────
+    // Runs here (music.youtube.com) because the <video> element lives in this frame.
+    // Emits raw FFT bins to Rust at ~20fps; Rust relays as 'player-viz' to the popup.
+    let _audioCtx   = null;
+    let _analyser   = null;
+    let _freqData   = null;
+    let _vizRunning = false;
+    let _audioTries = 0;
+
+    function setupAudioAnalyser() {
+        if (_audioCtx || _audioTries >= 8) return;
+        _audioTries++;
+        const video = getActiveVideo();
+        if (!video || video.readyState < 2) return;
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const src = ctx.createMediaElementSource(video);
+            const an  = ctx.createAnalyser();
+            an.fftSize = 64;               // 32 frequency bins
+            an.smoothingTimeConstant = 0.55;
+            src.connect(an);
+            an.connect(ctx.destination);   // audio keeps playing normally
+            ctx.resume().catch(() => {});
+            _audioCtx  = ctx;
+            _analyser  = an;
+            _freqData  = new Uint8Array(an.frequencyBinCount);
+            console.log('[ytune] Web Audio ready, bins:', an.frequencyBinCount);
+        } catch(e) {
+            console.warn('[ytune] Web Audio setup failed:', e.message);
+        }
+    }
+
+    function startVizEmit() {
+        if (_vizRunning) return;
+        _vizRunning = true;
+        function loop() {
+            if (!_vizRunning) return;
+            if (_analyser) {
+                if (_audioCtx.state === 'suspended') _audioCtx.resume().catch(() => {});
+                _analyser.getByteFrequencyData(_freqData);
+                window.__TAURI_INTERNALS__.invoke('plugin:event|emit', {
+                    event: 'ytune-viz',
+                    payload: Array.from(_freqData),
+                }).catch(() => {});
+            }
+            setTimeout(loop, 33); // ~30 fps
+        }
+        loop();
     }
 
     let pollCount = 0;
@@ -119,6 +231,9 @@ const INJECT_JS: &str = r#"
         setInterval(() => {
             const state = getState();
             pollCount++;
+            // Lazy audio setup — requires a playing video and prior user gesture
+            if (!_audioCtx) setupAudioAnalyser();
+            if (_audioCtx && !_vizRunning) startVizEmit();
             if (pollCount <= 3) {
                 const t = getDisplayedTimes();
                 const tEl = document.querySelector('.time-info.ytmusic-player-bar');
@@ -130,8 +245,6 @@ const INJECT_JS: &str = r#"
                 console.log('[ytune] poll #' + pollCount + ' title="' + state.title + '" playing=' + state.playing);
             }
             if (!state.title) return;
-            // Use Tauri's event system (allowed by core:event:allow-emit in core:default)
-            // instead of a command (commands from remote origins require a plugin + permission file)
             window.__TAURI_INTERNALS__.invoke('plugin:event|emit', {
                 event: 'ytune-state',
                 payload: state,
@@ -243,6 +356,7 @@ fn toggle_tray_popup<R: Runtime>(app: &tauri::AppHandle<R>) {
         .title("")
         .inner_size(340.0, 205.0)
         .decorations(false)
+        .transparent(true)
         .skip_taskbar(true)
         .always_on_top(true)
         .resizable(false)
@@ -323,6 +437,16 @@ pub fn run() {
             let handle = app.handle().clone();
             app.listen("ytune-state", move |event| {
                 handle_player_state(&handle, event.payload());
+            });
+
+            // Relay raw FFT data from the YTM webview to the popup window.
+            // event.payload() is already a JSON string (e.g. "[0,12,45,...]") — deserialize
+            // it back to a Value so the JS side receives an actual array, not a double-encoded string.
+            let handle2 = app.handle().clone();
+            app.listen("ytune-viz", move |event| {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                    let _ = handle2.emit("player-viz", v);
+                }
             });
 
             WebviewWindowBuilder::new(
