@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# SvelteKit / Vite build output
+/build
+/.svelte-kit
+/package
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Rust / Cargo
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Tauri generated tools (downloaded at build time)
+src-tauri/WixTools/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
