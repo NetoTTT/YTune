@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -9,7 +10,7 @@ use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 // struct CrossfadeState(Mutex<u64>);
 
 
-const DISCORD_CLIENT_ID: &str = "YOUR_CLIENT_ID_HERE";
+const DISCORD_CLIENT_ID: &str = "1513965769199980634";
 
 const INJECT_JS: &str = r#"
 (function() {
@@ -378,6 +379,9 @@ const INJECT_JS: &str = r#"
 
 pub struct DiscordState(pub Mutex<Option<DiscordIpcClient>>);
 
+// (title, song_start_ts, last_discord_update_unix, last_playing)
+struct DiscordTrackState(Mutex<(String, i64, i64, bool)>);
+
 #[tauri::command]
 fn show_main_window<R: Runtime>(app: tauri::AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
@@ -504,6 +508,7 @@ fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
     let playing      = state["playing"].as_bool().unwrap_or(false);
     let current_time = state["currentTime"].as_f64().unwrap_or(0.0);
     let duration     = state["duration"].as_f64().unwrap_or(0.0);
+    let thumbnail    = state["thumbnail"].as_str().unwrap_or("").to_string();
 
     let palette_h = state["paletteH"].as_i64().unwrap_or(280);
     let palette_s = state["paletteS"].as_i64().unwrap_or(65);
@@ -521,19 +526,74 @@ fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
     // Forward to tray popup
     let _ = app.emit("player_state_changed", &state);
 
-    // Update Discord Rich Presence
-    if let Some(discord) = app.try_state::<DiscordState>() {
-        let mut guard = discord.0.lock().unwrap();
-        if let Some(client) = guard.as_mut() {
-            let status = if playing { "Playing" } else { "Paused" };
-            let result = client.set_activity(
-                activity::Activity::new()
-                    .details(&title)
-                    .state(&format!("{} — {}", artist, status))
-                    .assets(activity::Assets::new().large_image("ytmusic")),
-            );
-            if result.is_err() {
-                *guard = None;
+    // Rate-limited Discord update: only when title/playing changes, or every 15s
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let should_update = if let Some(ts) = app.try_state::<DiscordTrackState>() {
+        let mut t = ts.0.lock().unwrap();
+        let song_start = now_unix - current_time as i64;
+        let song_changed = t.0 != title;
+        let play_changed = t.3 != playing;
+        let stale       = now_unix - t.2 >= 15;
+
+        if song_changed {
+            *t = (title.clone(), song_start, now_unix, playing);
+            true
+        } else if play_changed || stale {
+            t.2 = now_unix;
+            t.3 = playing;
+            true
+        } else {
+            false
+        }
+    } else {
+        true
+    };
+
+    let start_ts = if let Some(ts) = app.try_state::<DiscordTrackState>() {
+        ts.0.lock().unwrap().1
+    } else {
+        now_unix - current_time as i64
+    };
+
+    if should_update {
+        if let Some(discord) = app.try_state::<DiscordState>() {
+            let mut guard = discord.0.lock().unwrap();
+            if let Some(client) = guard.as_mut() {
+                let assets = if thumbnail.starts_with("https://") {
+                    activity::Assets::new()
+                        .large_url(&thumbnail)
+                        .large_text(&title)
+                } else {
+                    activity::Assets::new().large_image("ytmusic")
+                };
+                let result = if playing {
+                    client.set_activity(
+                        activity::Activity::new()
+                            .activity_type(activity::ActivityType::Listening)
+                            .status_display_type(activity::StatusDisplayType::Details)
+                            .details(&title)
+                            .state(&artist)
+                            .timestamps(activity::Timestamps::new().start(start_ts))
+                            .assets(assets),
+                    )
+                } else {
+                    client.set_activity(
+                        activity::Activity::new()
+                            .activity_type(activity::ActivityType::Listening)
+                            .status_display_type(activity::StatusDisplayType::Details)
+                            .details(&title)
+                            .state(&format!("{} · Paused", artist))
+                            .assets(assets),
+                    )
+                };
+                match result {
+                    Ok(_)  => println!("[discord] set_activity ok title={:?} playing={}", title, playing),
+                    Err(e) => { println!("[discord] set_activity failed: {:?}", e); *guard = None; }
+                }
             }
         }
     }
@@ -549,6 +609,7 @@ pub fn run() {
             }
         }))
         .manage(DiscordState(Mutex::new(None)))
+        .manage(DiscordTrackState(Mutex::new((String::new(), 0, 0, false))))
         // .manage(CrossfadeState(Mutex::new(0)))
         .setup(|app| {
             // Listen for player state events emitted by the injected JS in the YTM webview.
@@ -599,11 +660,29 @@ pub fn run() {
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                let mut client = DiscordIpcClient::new(DISCORD_CLIENT_ID);
-                if client.connect().is_ok() {
-                    if let Some(state) = handle.try_state::<DiscordState>() {
-                        *state.0.lock().unwrap() = Some(client);
+                loop {
+                    println!("[discord] trying to connect (client_id={})", DISCORD_CLIENT_ID);
+                    let mut client = DiscordIpcClient::new(DISCORD_CLIENT_ID);
+                    match client.connect() {
+                        Ok(_) => {
+                            println!("[discord] connected");
+                            if let Some(state) = handle.try_state::<DiscordState>() {
+                                *state.0.lock().unwrap() = Some(client);
+                                loop {
+                                    std::thread::sleep(std::time::Duration::from_secs(5));
+                                    let gone = handle.try_state::<DiscordState>()
+                                        .map(|s| s.0.lock().unwrap().is_none())
+                                        .unwrap_or(true);
+                                    if gone {
+                                        println!("[discord] disconnected, will retry in 15s");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => println!("[discord] connect failed: {:?}, retrying in 15s", e),
                     }
+                    std::thread::sleep(std::time::Duration::from_secs(15));
                 }
             });
 
