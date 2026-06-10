@@ -564,10 +564,12 @@ fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
             let mut guard = discord.0.lock().unwrap();
             if let Some(client) = guard.as_mut() {
                 let assets = if thumbnail.starts_with("https://") {
+                    println!("[discord] thumb url: {}", &thumbnail[..thumbnail.len().min(80)]);
                     activity::Assets::new()
-                        .large_url(&thumbnail)
+                        .large_image(&thumbnail)
                         .large_text(&title)
                 } else {
+                    println!("[discord] no https thumb, using fallback. thumb={:?}", &thumbnail[..thumbnail.len().min(30)]);
                     activity::Assets::new().large_image("ytmusic")
                 };
                 let result = if playing {
