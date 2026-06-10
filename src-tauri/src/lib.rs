@@ -11,6 +11,7 @@ use tauri::{
 };
 
 use discord::{DiscordState, DiscordTrackState};
+use discord_rich_presence::DiscordIpc;
 use inject::INJECT_JS;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -23,7 +24,7 @@ pub fn run() {
             }
         }))
         .manage(DiscordState(Mutex::new(None)))
-        .manage(DiscordTrackState(Mutex::new((String::new(), 0, 0, false, String::new()))))
+        .manage(DiscordTrackState(Mutex::new((String::new(), 0, 0, false, String::new(), false))))
         .setup(|app| {
             // Listen for player state events emitted by the injected JS in the YTM webview.
             // Using events (plugin:event|emit) instead of commands because Tauri 2 only allows
@@ -36,6 +37,36 @@ pub fn run() {
             // Relay raw FFT data from the YTM webview to the popup window.
             // event.payload() is already a JSON string (e.g. "[0,12,45,...]") — deserialize
             // it back to a Value so the JS side receives an actual array, not a double-encoded string.
+            let handle_popup = app.handle().clone();
+            app.listen("ytune-toggle-popup", move |_| {
+                tray::toggle_tray_popup(&handle_popup);
+            });
+
+            let handle_state_req = app.handle().clone();
+            app.listen("ytune-discord-state-request", move |_| {
+                let enabled = tray::discord_enabled_get(&handle_state_req);
+                if let Some(main) = handle_state_req.get_webview_window("main") {
+                    let _ = main.eval(&format!("window.__ytune__?.setDiscordState?.({})", enabled));
+                }
+            });
+
+            let handle_discord = app.handle().clone();
+            app.listen("ytune-discord-toggle", move |_| {
+                let new_val = !tray::discord_enabled_get(&handle_discord);
+                tray::discord_enabled_set(&handle_discord, new_val);
+                if !new_val {
+                    if let Some(d) = handle_discord.try_state::<discord::DiscordState>() {
+                        let mut g = d.0.lock().unwrap();
+                        if let Some(c) = g.as_mut() { let _ = c.clear_activity(); }
+                    }
+                }
+                // eval into YTM for reliable delivery; emit for the popup to sync
+                if let Some(main) = handle_discord.get_webview_window("main") {
+                    let _ = main.eval(&format!("window.__ytune__?.setDiscordState?.({})", new_val));
+                }
+                let _ = handle_discord.emit("ytune-discord-state", new_val);
+            });
+
             let handle2 = app.handle().clone();
             app.listen("ytune-viz", move |event| {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
@@ -127,6 +158,8 @@ pub fn run() {
             commands::player_control,
             commands::player_seek,
             commands::player_volume,
+            commands::discord_get,
+            commands::discord_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
