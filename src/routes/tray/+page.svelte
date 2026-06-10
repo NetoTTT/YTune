@@ -1,6 +1,7 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, onDestroy, tick } from "svelte";
 
   const MAX_ITEMS = 5;
@@ -325,6 +326,7 @@
   // ── Event listener ────────────────────────────────────────────────
   onMount(async () => {
     await tick();
+
     vizCanvas = document.querySelector('canvas') ?? document.querySelector('.viz-canvas');
     loadConfig();
     const initH = colorMode === "fixed" ? THEMES[fixedTheme].h : 280;
@@ -416,6 +418,11 @@
   const openApp = () => { invoke("show_main_window"); invoke("hide_tray_popup"); };
   const close   = () => invoke("hide_tray_popup");
 
+  function onHeaderDrag(e) {
+    if (e.target.closest('button')) return;
+    getCurrentWindow().startDragging();
+  }
+
   function onSeekInput(e) { isSeeking = true; seekValue = +e.target.value; }
   function onSeekCommit(e) {
     invoke("player_seek", { position: +e.target.value });
@@ -463,7 +470,7 @@
   <canvas width="340" height="500" class="viz-canvas" class:viz-on={bgViz === "cava" || bgViz === "spectrum"}></canvas>
 
   <!-- ── Header ── -->
-  <header data-tauri-drag-region>
+  <header data-tauri-drag-region onmousedown={onHeaderDrag}>
     <span class="brand">ytune</span>
     <div class="header-actions">
       {#if showConfig}

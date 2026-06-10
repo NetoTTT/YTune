@@ -1,5 +1,4 @@
 use tauri::{Runtime, Manager};
-use crate::tray::position_popup;
 
 #[tauri::command]
 pub fn show_main_window<R: Runtime>(app: tauri::AppHandle<R>) {
@@ -41,7 +40,6 @@ pub fn player_control<R: Runtime>(app: tauri::AppHandle<R>, action: String) {
 pub fn resize_popup<R: Runtime>(app: tauri::AppHandle<R>, height: f64) {
     if let Some(popup) = app.get_webview_window("tray-popup") {
         let _ = popup.set_size(tauri::Size::Logical(tauri::LogicalSize { width: 340.0, height }));
-        position_popup(&app, &popup, height);
     }
 }
 

@@ -1,15 +1,38 @@
 use tauri::{Runtime, WebviewUrl, WebviewWindowBuilder, Manager};
 
+fn popup_pos_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("popup_pos"))
+}
+
+fn save_popup_pos<R: Runtime>(app: &tauri::AppHandle<R>, popup: &tauri::WebviewWindow<R>) {
+    let Ok(pos) = popup.outer_position() else { return };
+    let Ok(Some(monitor)) = app.primary_monitor() else { return };
+    let scale = monitor.scale_factor();
+    let x = pos.x as f64 / scale;
+    let y = pos.y as f64 / scale;
+    if let Some(path) = popup_pos_path(app) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, format!("{},{}", x, y));
+    }
+}
+
+fn load_popup_pos<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<(f64, f64)> {
+    let path = popup_pos_path(app)?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let (xs, ys) = content.split_once(',')?;
+    Some((xs.trim().parse().ok()?, ys.trim().parse().ok()?))
+}
+
 pub fn toggle_tray_popup<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(popup) = app.get_webview_window("tray-popup") {
         if popup.is_visible().unwrap_or(false) {
+            save_popup_pos(app, &popup);
             let _ = popup.hide();
             return;
         }
-        let h = popup.inner_size().ok()
-            .and_then(|s| app.primary_monitor().ok().flatten().map(|m| s.height as f64 / m.scale_factor()))
-            .unwrap_or(205.0);
-        position_popup(app, &popup, h);
+        // Existing hidden window — show at wherever it already is (user moved it this session)
         let _ = popup.show();
         let _ = popup.set_focus();
     } else {
@@ -28,7 +51,12 @@ pub fn toggle_tray_popup<R: Runtime>(app: &tauri::AppHandle<R>) {
         .visible(false)
         .build()
         {
-            position_popup(app, &popup, 205.0);
+            // Restore last saved position; fall back to default bottom-right
+            if let Some((x, y)) = load_popup_pos(app) {
+                let _ = popup.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            } else {
+                position_popup(app, &popup, 205.0);
+            }
             let _ = popup.show();
             let _ = popup.set_focus();
         }
