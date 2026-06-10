@@ -33,7 +33,8 @@
   let showConfig   = $state(false);
   let colorMode    = $state("dynamic"); // "dynamic" | "fixed"
   let fixedTheme   = $state(0);         // index into THEMES
-  let bgMode       = $state("art");     // "solid" | "art" | "cava" | "spectrum"
+  let bgBase       = $state("art");     // "solid" | "art"  (background image)
+  let bgViz        = $state("none");    // "none" | "cava" | "spectrum"
   let vizColorMode = $state("dynamic"); // "dynamic" | "fixed"  (bar color for cava/spectrum)
   let lastPalette  = { h: 280, s: 65 };
   let isSeeking      = $state(false);
@@ -52,8 +53,6 @@
   let vizTargets = Array(VIZ_N).fill(0);
   let vizPhase   = 0;
   let rawBars    = Array(32).fill(0); // real FFT data from Web Audio API
-  let dbg        = $state({ frame: false, bar0: 0, canvasW: 0, canvasH: 0, err: '' });
-  let _dbgInterval;
 
   // ── Palette ───────────────────────────────────────────────────────
   // Colors are extracted in the injection script (music.youtube.com context)
@@ -77,18 +76,27 @@
     try {
       const raw = localStorage.getItem("ytune-config");
       if (!raw) return;
-      const cfg     = JSON.parse(raw);
+      const cfg  = JSON.parse(raw);
       colorMode    = cfg.colorMode    || "dynamic";
       fixedTheme   = cfg.fixedTheme   ?? 0;
-      bgMode       = cfg.bgMode       || "art";
       vizColorMode = cfg.vizColorMode || "dynamic";
+      // migrate old single bgMode field
+      if (cfg.bgMode && !cfg.bgBase) {
+        if      (cfg.bgMode === "solid")    { bgBase = "solid"; bgViz = "none"; }
+        else if (cfg.bgMode === "art")      { bgBase = "art";   bgViz = "none"; }
+        else if (cfg.bgMode === "cava")     { bgBase = "art";   bgViz = "cava"; }
+        else if (cfg.bgMode === "spectrum") { bgBase = "art";   bgViz = "spectrum"; }
+      } else {
+        bgBase = cfg.bgBase || "art";
+        bgViz  = cfg.bgViz  || "none";
+      }
     } catch {}
   }
 
   function saveConfig() {
     try {
       localStorage.setItem("ytune-config", JSON.stringify({
-        colorMode, fixedTheme, bgMode, vizColorMode,
+        colorMode, fixedTheme, bgBase, bgViz, vizColorMode,
       }));
     } catch {}
   }
@@ -99,11 +107,13 @@
   const CFG_BG     = 76;  // background section
   const CFG_VIZ    = 76;  // bar color section (only when bgMode=cava|spectrum)
 
+  const CFG_VIZ_OPT   = 76; // visualizer row (always shown in config)
+
   function syncConfigSize() {
     if (!showConfig) { syncSize(); return; }
-    let h = CFG_BASE + CFG_BG;
-    if (colorMode    === "fixed")                                h += CFG_PRESET;
-    if (bgMode === "cava" || bgMode === "spectrum")              h += CFG_VIZ;
+    let h = CFG_BASE + CFG_BG + CFG_VIZ_OPT;
+    if (colorMode === "fixed")                           h += CFG_PRESET;
+    if (bgViz === "cava" || bgViz === "spectrum")        h += CFG_VIZ;
     invoke("resize_popup", { height: h });
   }
 
@@ -123,9 +133,14 @@
     saveConfig();
   }
 
-  function setBgMode(mode) {
-    bgMode = mode;
-    if (mode === "cava" || mode === "spectrum") startViz(); else stopViz();
+  function setBgBase(base) {
+    bgBase = base;
+    saveConfig();
+  }
+
+  function setBgViz(viz) {
+    bgViz = viz;
+    if (viz === "cava" || viz === "spectrum") startViz(); else stopViz();
     syncConfigSize();
     saveConfig();
   }
@@ -158,7 +173,7 @@
       const barIdx = i < half ? (half - 1 - i) : (i - half);
       const v = vizBars[barIdx];
       const x = i * barW + 1;
-      if (bgMode === "cava") {
+      if (bgViz === "cava") {
         const bh = v * h * 0.85;
         const g = ctx.createLinearGradient(0, h, 0, h - bh);
         g.addColorStop(0, vizColor(0.75));
@@ -167,7 +182,11 @@
         ctx.fillRect(x, h - bh, barW - 2, bh);
       } else {
         const bh = v * h * 0.45;
-        ctx.fillStyle = vizColor(0.55);
+        const g = ctx.createLinearGradient(0, h / 2 - bh, 0, h / 2 + bh);
+        g.addColorStop(0,   vizColor(0.10));
+        g.addColorStop(0.5, vizColor(0.75));
+        g.addColorStop(1,   vizColor(0.10));
+        ctx.fillStyle = g;
         ctx.fillRect(x, h / 2 - bh, barW - 2, bh * 2);
       }
     }
@@ -196,11 +215,10 @@
         const spd = vizTargets[i] > vizBars[i] ? 0.40 : 0.08;
         vizBars[i] += (vizTargets[i] - vizBars[i]) * spd;
       }
-      if (vizCanvas && (bgMode === "cava" || bgMode === "spectrum")) {
+      if (vizCanvas && (bgViz === "cava" || bgViz === "spectrum")) {
         drawBars(vizCanvas.getContext("2d"), vizCanvas.width, vizCanvas.height);
       }
     } catch(e) {
-      dbg = { ...dbg, err: e.message };
     }
     vizFrame = requestAnimationFrame(vizTick);
   }
@@ -221,26 +239,10 @@
   onMount(async () => {
     await tick();
     vizCanvas = document.querySelector('canvas') ?? document.querySelector('.viz-canvas');
-    // draw test rect immediately to confirm canvas access
-    if (vizCanvas) {
-      const ctx = vizCanvas.getContext('2d');
-      ctx.fillStyle = 'rgba(255,0,0,0.6)';
-      ctx.fillRect(0, 0, 60, 60);
-    }
-    // independent debug update — not relying on rAF timing
-    _dbgInterval = setInterval(() => {
-      dbg = {
-        frame:   !!vizFrame,
-        bar0:    +vizBars[0].toFixed(3),
-        canvasW: vizCanvas?.width  ?? 0,
-        canvasH: vizCanvas?.height ?? 0,
-        err:     dbg.err,
-      };
-    }, 500);
     loadConfig();
     applyPalette(colorMode === "fixed" ? THEMES[fixedTheme].h : 280,
                  colorMode === "fixed" ? THEMES[fixedTheme].s : 65);
-    if (bgMode === "cava" || bgMode === "spectrum") startViz();
+    if (bgViz === "cava" || bgViz === "spectrum") startViz();
     unlistenViz = await listen("player-viz", (e) => {
       try {
         const arr = typeof e.payload === 'string' ? JSON.parse(e.payload) : e.payload;
@@ -264,9 +266,15 @@
         currentTime = 0;
         seekValue   = 0;
         duration    = 0;
+        // Keep liked/disliked false until next poll confirms new song's state
+        liked    = false;
+        disliked = false;
       } else if (!isSeeking) {
         currentTime = newTime;
         seekValue   = newTime;
+        // Only update like state on stable polls (not right when song changes)
+        liked    = p.liked    ?? false;
+        disliked = p.disliked ?? false;
       }
 
       // Palette pre-computed by injection script (~1s after song change)
@@ -279,8 +287,6 @@
       // Use data URI when available; clears on song change, repopulates ~1s later
       if (songChanged) thumbnailData = "";
       if (p.thumbnailData) thumbnailData = p.thumbnailData;
-      liked     = p.liked     ?? false;
-      disliked  = p.disliked  ?? false;
       playing   = p.playing;
       if (!isVolAdjusting) volume = p.volume ?? volume;
       if (!songChanged) duration = newDur;
@@ -289,7 +295,6 @@
   });
 
   onDestroy(() => {
-    clearInterval(_dbgInterval);
     unlisten?.();
     unlistenViz?.();
     stopViz();
@@ -346,13 +351,13 @@
 
 <main data-tauri-drag-region>
 
-  <!-- Blurred album art background — rendered first so canvas paints on top -->
-  {#if bgMode !== "solid" && (thumbnailData || thumbnail)}
+  <!-- Blurred album art background — only when bgBase is "art" -->
+  {#if bgBase === "art" && (thumbnailData || thumbnail)}
     <div class="bg-art" style={`background-image:url("${thumbnailData || thumbnail}")`} aria-hidden="true"></div>
   {/if}
 
-  <!-- Visualizer canvas (always in DOM; active when bgMode is cava/spectrum) -->
-  <canvas width="340" height="500" class="viz-canvas" class:viz-on={bgMode === "cava" || bgMode === "spectrum"}></canvas>
+  <!-- Visualizer canvas (active when bgViz is cava/spectrum) -->
+  <canvas width="340" height="500" class="viz-canvas" class:viz-on={bgViz === "cava" || bgViz === "spectrum"}></canvas>
 
   <!-- ── Header ── -->
   <header data-tauri-drag-region>
@@ -426,14 +431,21 @@
       <div class="cfg-section">
         <p class="cfg-label">Background</p>
         <div class="mode-row">
-          <button class="mode-btn" class:mode-active={bgMode === "solid"}    onclick={() => setBgMode("solid")}   >Solid</button>
-          <button class="mode-btn" class:mode-active={bgMode === "art"}      onclick={() => setBgMode("art")}     >Art</button>
-          <button class="mode-btn" class:mode-active={bgMode === "cava"}     onclick={() => setBgMode("cava")}    >Cava</button>
-          <button class="mode-btn" class:mode-active={bgMode === "spectrum"} onclick={() => setBgMode("spectrum")}>Spectrum</button>
+          <button class="mode-btn" class:mode-active={bgBase === "solid"} onclick={() => setBgBase("solid")}>Solid</button>
+          <button class="mode-btn" class:mode-active={bgBase === "art"}   onclick={() => setBgBase("art")}  >Art</button>
         </div>
       </div>
 
-      {#if bgMode === "cava" || bgMode === "spectrum"}
+      <div class="cfg-section">
+        <p class="cfg-label">Visualizer</p>
+        <div class="mode-row">
+          <button class="mode-btn" class:mode-active={bgViz === "none"}     onclick={() => setBgViz("none")}    >None</button>
+          <button class="mode-btn" class:mode-active={bgViz === "cava"}     onclick={() => setBgViz("cava")}    >Cava</button>
+          <button class="mode-btn" class:mode-active={bgViz === "spectrum"} onclick={() => setBgViz("spectrum")}>Spectrum</button>
+        </div>
+      </div>
+
+      {#if bgViz === "cava" || bgViz === "spectrum"}
         <div class="cfg-section">
           <p class="cfg-label">Bar color</p>
           <div class="mode-row">
@@ -576,7 +588,7 @@
       <p class="queue-label">Queue</p>
       <ul>
         {#each queue.slice(0, MAX_ITEMS) as item}
-          <li class:current={item.current}>
+          <li class:current={item.current} class:q-clickable={!item.current} onclick={() => { if (!item.current) control(`queue_jump_${item.domIndex}`); }}>
             <span class="dot">{item.current ? "▶" : "·"}</span>
             <span class="q-title" title={item.title}>{item.title}</span>
             <span class="q-artist" title={item.artist}>{item.artist}</span>
@@ -588,10 +600,6 @@
 
   {/if} <!-- end {#if showConfig} else -->
 
-  <!-- ── DEBUG overlay (remove when done) ── -->
-  <div class="dbg">
-    bg={bgMode} | play={playing} | frame={dbg.frame} | bar0={dbg.bar0} | cvs={dbg.canvasW}x{dbg.canvasH}{dbg.err ? ' | ERR:'+dbg.err : ''}
-  </div>
 
 </main>
 
@@ -766,8 +774,9 @@
     align-items: center; gap: 6px;
     padding: 6px 6px 6px 4px; border-radius: 6px; transition: background 0.12s;
   }
-  li:hover    { background: rgba(255,255,255,0.05); }
-  li.current  { background: var(--accent-dim); transition: background 0.6s ease; }
+  li:hover          { background: rgba(255,255,255,0.05); }
+  li.q-clickable    { cursor: pointer; }
+  li.current        { background: var(--accent-dim); transition: background 0.6s ease; }
 
   .dot { font-size: 10px; color: #636366; text-align: center; line-height: 1; }
   li.current .dot { color: var(--accent); }
@@ -816,17 +825,17 @@
   .mode-row { display: flex; gap: 6px; }
   .mode-btn {
     flex: 1; padding: 8px 2px;
-    border-radius: 9px; border: 1px solid rgba(255,255,255,0.08);
-    background: rgba(255,255,255,0.05);
-    color: #8e8e93; font-size: 11.5px; font-weight: 500;
+    border-radius: 9px; border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(0,0,0,0.45);
+    color: #d0d0d5; font-size: 11.5px; font-weight: 500;
     cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
     white-space: nowrap;
   }
-  .mode-btn:hover { background: rgba(255,255,255,0.09); color: #f5f5f7; }
+  .mode-btn:hover { background: rgba(0,0,0,0.6); color: #f5f5f7; }
   .mode-btn.mode-active {
     background: var(--accent-dim);
     color: var(--accent);
-    border-color: transparent;
+    border-color: rgba(255,255,255,0.15);
   }
 
   .theme-grid { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -844,12 +853,4 @@
     box-shadow: 0 0 0 2px rgba(255,255,255,0.18);
   }
 
-  /* DEBUG */
-  .dbg {
-    position: absolute;
-    bottom: 4px; left: 0; right: 0;
-    font-size: 9px; color: #fff; background: rgba(0,0,0,0.7);
-    text-align: center; padding: 2px 4px; z-index: 999;
-    pointer-events: none; font-family: monospace;
-  }
 </style>

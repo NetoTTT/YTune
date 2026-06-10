@@ -23,8 +23,40 @@ const INJECT_JS: &str = r#"
         next:      () => document.querySelector('.next-button.ytmusic-player-bar button')?.click(),
         previous:  () => document.querySelector('.previous-button.ytmusic-player-bar button')?.click(),
         seek:      (t) => { const v = document.querySelector('video'); if (v) v.currentTime = t; },
-        like:      () => document.querySelector('ytmusic-like-button-renderer .like button')?.click(),
-        dislike:   () => document.querySelector('ytmusic-like-button-renderer .dislike button')?.click(),
+        like: () => {
+            const status = document.querySelector('#like-button-renderer')?.getAttribute('like-status');
+            console.log('[ytune] like: current like-status=' + status);
+            document.querySelector('#like-button-renderer .like button')?.click();
+        },
+        dislike: () => {
+            const status = document.querySelector('#like-button-renderer')?.getAttribute('like-status');
+            console.log('[ytune] dislike: current like-status=' + status);
+            document.querySelector('#like-button-renderer .dislike button')?.click();
+        },
+        queueJump: (n) => {
+            const items = document.querySelectorAll('ytmusic-player-queue-item');
+            if (!items[n]) { console.warn('[ytune] queueJump: item not found n=' + n); return; }
+            const el = items[n];
+
+            // ytmusic-play-button-renderer has role="button" and display-style=PERSISTENT
+            // (always in DOM, not just on hover). Clicking it starts playback of that item.
+            const playBtn = el.querySelector('ytmusic-play-button-renderer');
+            if (playBtn) {
+                console.log('[ytune] queueJump: clicking play-button-renderer state=' + playBtn.getAttribute('state'));
+                playBtn.click();
+                return;
+            }
+
+            // Fallback: playerApi with delta-based index
+            const api = document.querySelector('ytmusic-player')?.playerApi;
+            if (api) {
+                const currentDomIdx = Array.from(items).findIndex(i => i.hasAttribute('selected'));
+                const pIdx = typeof api.getPlaylistIndex === 'function' ? api.getPlaylistIndex() : 0;
+                const target = pIdx + (n - currentDomIdx);
+                console.log('[ytune] queueJump fallback: playVideoAt(' + target + ')');
+                api.playVideoAt(Math.max(0, target));
+            }
+        },
         setVolume: (v) => {
             // YTM stores its own volume state; setting video.volume directly gets overridden.
             // Use the player API so YTM updates its internal state too.
@@ -93,12 +125,17 @@ const INJECT_JS: &str = r#"
     function getQueue() {
         const items = document.querySelectorAll('ytmusic-player-queue-item');
         if (items.length < 2) return [];
-        const all = Array.from(items).map(el => ({
-            title:   el.querySelector('.song-title')?.textContent?.trim() || '',
-            artist:  el.querySelector('.byline')?.textContent?.trim() || '',
-            current: el.hasAttribute('selected'),
+        const all = Array.from(items).map((el, idx) => ({
+            title:    el.querySelector('.song-title')?.textContent?.trim() || '',
+            artist:   el.querySelector('.byline')?.textContent?.trim() || '',
+            current:  el.hasAttribute('selected'),
+            domIndex: idx,
         }));
         const ci = all.findIndex(i => i.current);
+        if (pollCount % 10 === 1) {
+            console.log('[ytune] queue total=' + items.length + ' currentIdx=' + ci,
+                all.slice(0,5).map(x => x.title + (x.current?' [CUR]':'')));
+        }
         if (ci === -1) return [];
         return all.slice(Math.max(0, ci - 2), Math.min(all.length, ci + 4));
     }
@@ -156,10 +193,10 @@ const INJECT_JS: &str = r#"
             artist:      document.querySelector('.subtitle.ytmusic-player-bar')?.textContent?.trim()
                       || '',
             thumbnail:   thumb,
-            liked:       document.querySelector('ytmusic-like-button-renderer .like button')
-                           ?.getAttribute('aria-pressed') === 'true',
-            disliked:    document.querySelector('ytmusic-like-button-renderer .dislike button')
-                           ?.getAttribute('aria-pressed') === 'true',
+            liked:       document.querySelector('#like-button-renderer')
+                           ?.getAttribute('like-status') === 'LIKE',
+            disliked:    document.querySelector('#like-button-renderer')
+                           ?.getAttribute('like-status') === 'DISLIKE',
             playing:     video ? !video.paused : false,
             volume:      (function() {
                              const p = document.querySelector('ytmusic-player');
@@ -300,6 +337,12 @@ fn hide_tray_popup<R: Runtime>(app: tauri::AppHandle<R>) {
 #[tauri::command]
 fn player_control<R: Runtime>(app: tauri::AppHandle<R>, action: String) {
     if let Some(main) = app.get_webview_window("main") {
+        if let Some(idx_str) = action.strip_prefix("queue_jump_") {
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                let _ = main.eval(&format!("window.__ytune__?.queueJump({})", idx));
+            }
+            return;
+        }
         let js = match action.as_str() {
             "play_pause" => "window.__ytune__?.playPause()",
             "next"       => "window.__ytune__?.next()",
