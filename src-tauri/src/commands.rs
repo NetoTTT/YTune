@@ -1,5 +1,28 @@
-use tauri::{Runtime, Manager};
-use crate::tray::monitor_at;
+use tauri::{Emitter, Runtime, Manager};
+use discord_rich_presence::DiscordIpc;
+use crate::tray::{monitor_at, discord_enabled_get, discord_enabled_set};
+
+#[tauri::command]
+pub fn discord_get<R: Runtime>(app: tauri::AppHandle<R>) -> bool {
+    discord_enabled_get(&app)
+}
+
+#[tauri::command]
+pub fn discord_set<R: Runtime>(app: tauri::AppHandle<R>, enabled: bool) {
+    discord_enabled_set(&app, enabled);
+    if !enabled {
+        if let Some(discord) = app.try_state::<crate::discord::DiscordState>() {
+            let mut guard = discord.0.lock().unwrap();
+            if let Some(client) = guard.as_mut() {
+                let _ = client.clear_activity();
+            }
+        }
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.eval(&format!("window.__ytune__?.setDiscordState?.({})", enabled));
+    }
+    let _ = app.emit("ytune-discord-state", enabled);
+}
 
 #[tauri::command]
 pub fn show_main_window<R: Runtime>(app: tauri::AppHandle<R>) {

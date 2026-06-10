@@ -112,7 +112,7 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
         now_unix - current_time as i64
     };
 
-    if should_update {
+    if should_update && crate::tray::discord_enabled_get(app) {
         if let Some(discord) = app.try_state::<DiscordState>() {
             let mut guard = discord.0.lock().unwrap();
             if let Some(client) = guard.as_mut() {

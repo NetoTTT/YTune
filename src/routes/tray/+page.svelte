@@ -31,7 +31,8 @@
   let queue       = $state([]);
   let showQueue   = $state(false);
   let showVolume  = $state(false);
-  let showConfig   = $state(false);
+  let showConfig      = $state(false);
+  let discordEnabled  = $state(true);
   let colorMode    = $state("dynamic"); // "dynamic" | "fixed"
   let fixedTheme   = $state(0);         // index into THEMES
   let bgBase       = $state("art");     // "solid" | "art"  (background image)
@@ -167,6 +168,11 @@
         bgViz  = cfg.bgViz  || "none";
       }
     } catch {}
+  }
+
+  async function toggleDiscord() {
+    discordEnabled = !discordEnabled;
+    await invoke("discord_set", { enabled: discordEnabled }).catch(() => {});
   }
 
   function saveConfig() {
@@ -329,6 +335,7 @@
 
     vizCanvas = document.querySelector('canvas') ?? document.querySelector('.viz-canvas');
     loadConfig();
+    discordEnabled = await invoke("discord_get").catch(() => true);
     const initH = colorMode === "fixed" ? THEMES[fixedTheme].h : 280;
     const initS = colorMode === "fixed" ? THEMES[fixedTheme].s : 65;
     currentPalette = { h: initH, s: initS };
@@ -585,6 +592,14 @@
           </div>
         </div>
       {/if}
+
+      <div class="cfg-section">
+        <p class="cfg-label">Discord Presence</p>
+        <div class="mode-row">
+          <button class="mode-btn" class:mode-active={discordEnabled}  onclick={toggleDiscord}>On</button>
+          <button class="mode-btn" class:mode-active={!discordEnabled} onclick={toggleDiscord}>Off</button>
+        </div>
+      </div>
     </section>
   {:else}
 
