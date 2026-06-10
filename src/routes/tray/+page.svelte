@@ -368,6 +368,12 @@
         // Keep liked/disliked false until next poll confirms new song's state
         liked    = false;
         disliked = false;
+      } else if (isSeeking && Math.abs(newTime - seekValue) < 3) {
+        // currentTime arrived close to where we seeked — release the bar
+        isSeeking = false;
+        clearTimeout(seekTimeout);
+        currentTime = newTime;
+        seekValue   = newTime;
       } else if (!isSeeking) {
         currentTime = newTime;
         seekValue   = newTime;
@@ -432,9 +438,11 @@
 
   function onSeekInput(e) { isSeeking = true; seekValue = +e.target.value; }
   function onSeekCommit(e) {
-    invoke("player_seek", { position: +e.target.value });
+    seekValue = +e.target.value;
+    invoke("player_seek", { position: seekValue });
     clearTimeout(seekTimeout);
-    seekTimeout = setTimeout(() => { isSeeking = false; }, 1500);
+    // Fallback: release after 5s if the player never confirms the new position
+    seekTimeout = setTimeout(() => { isSeeking = false; }, 5000);
   }
 
   function onVolumeInput(e) {

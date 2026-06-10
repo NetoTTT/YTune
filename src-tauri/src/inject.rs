@@ -11,7 +11,30 @@ pub const INJECT_JS: &str = r##"
         playPause: () => document.querySelector('#play-pause-button button')?.click(),
         next:      () => document.querySelector('.next-button.ytmusic-player-bar button')?.click(),
         previous:  () => document.querySelector('.previous-button.ytmusic-player-bar button')?.click(),
-        seek:      (t) => { const v = document.querySelector('video'); if (v) v.currentTime = t; },
+        seek: (t) => {
+            // YTM uses a continuous DASH stream so video.currentTime is the absolute playlist
+            // offset, not the song-relative time. Use playerApi.seekTo() which handles the
+            // offset internally. Fall back to the progress-bar slider as a secondary option.
+            const player = document.querySelector('ytmusic-player');
+            if (player?.playerApi?.seekTo) {
+                player.playerApi.seekTo(t, true);
+                return;
+            }
+            // Fallback: drive YTM's own seek bar to the target percentage
+            const dur = player?.playerApi?.getDuration?.() || 0;
+            if (dur > 0) {
+                const slider = document.querySelector('ytmusic-player-bar #progress-bar, ytmusic-player-bar tp-yt-paper-slider');
+                if (slider) {
+                    const pct = (t / dur) * (slider.max || 100);
+                    slider.value = pct;
+                    slider.dispatchEvent(new Event('change', { bubbles: true }));
+                    return;
+                }
+            }
+            // Last resort: direct video seek (may buffer on DASH streams)
+            const v = document.querySelector('video');
+            if (v) v.currentTime = t;
+        },
         like: () => {
             const status = document.querySelector('#like-button-renderer')?.getAttribute('like-status');
             console.log('[ytune] like: current like-status=' + status);
@@ -279,12 +302,22 @@ pub const INJECT_JS: &str = r##"
 
     // ── Web Audio analyser ────────────────────────────────────────────
     // Runs here (music.youtube.com) because the <video> element lives in this frame.
-    // Emits raw FFT bins to Rust at ~20fps; Rust relays as 'player-viz' to the popup.
+    // Emits raw FFT bins to Rust at ~30fps; Rust relays as 'player-viz' to the popup.
     let _audioCtx   = null;
     let _analyser   = null;
     let _freqData   = null;
     let _vizRunning = false;
     let _audioTries = 0;
+    let _audioVideo = null; // video element the current analyser is connected to
+
+    function teardownAudioAnalyser() {
+        if (_audioCtx) { _audioCtx.close().catch(() => {}); }
+        _audioCtx   = null;
+        _analyser   = null;
+        _freqData   = null;
+        _audioVideo = null;
+        _audioTries = 0;
+    }
 
     function setupAudioAnalyser() {
         if (_audioCtx || _audioTries >= 8) return;
@@ -300,9 +333,11 @@ pub const INJECT_JS: &str = r##"
             src.connect(an);
             an.connect(ctx.destination);   // audio keeps playing normally
             ctx.resume().catch(() => {});
-            _audioCtx  = ctx;
-            _analyser  = an;
-            _freqData  = new Uint8Array(an.frequencyBinCount);
+            _audioCtx   = ctx;
+            _analyser   = an;
+            _freqData   = new Uint8Array(an.frequencyBinCount);
+            _audioVideo = video;
+            _audioTries = 0; // reset on success so a future teardown can retry
             console.log('[ytune] Web Audio ready, bins:', an.frequencyBinCount);
         } catch(e) {
             console.warn('[ytune] Web Audio setup failed:', e.message);
@@ -333,7 +368,13 @@ pub const INJECT_JS: &str = r##"
         setInterval(() => {
             const state = getState();
             pollCount++;
-            // Lazy audio setup — requires a playing video and prior user gesture
+            // Re-setup if the video element was swapped out or the context closed
+            const activeVideo = getActiveVideo();
+            if (_audioCtx && (activeVideo !== _audioVideo || _audioCtx.state === 'closed')) {
+                console.log('[ytune] audio source changed, resetting analyser');
+                teardownAudioAnalyser();
+                _vizRunning = false;
+            }
             if (!_audioCtx) setupAudioAnalyser();
             if (_audioCtx && !_vizRunning) startVizEmit();
             if (pollCount <= 3) {
