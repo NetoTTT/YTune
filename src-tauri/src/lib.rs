@@ -36,6 +36,11 @@ pub fn run() {
             // Relay raw FFT data from the YTM webview to the popup window.
             // event.payload() is already a JSON string (e.g. "[0,12,45,...]") — deserialize
             // it back to a Value so the JS side receives an actual array, not a double-encoded string.
+            let handle_popup = app.handle().clone();
+            app.listen("ytune-toggle-popup", move |_| {
+                tray::toggle_tray_popup(&handle_popup);
+            });
+
             let handle2 = app.handle().clone();
             app.listen("ytune-viz", move |event| {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
