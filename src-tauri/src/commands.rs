@@ -1,4 +1,5 @@
 use tauri::{Runtime, Manager};
+use crate::tray::monitor_at;
 
 #[tauri::command]
 pub fn show_main_window<R: Runtime>(app: tauri::AppHandle<R>) {
@@ -38,9 +39,44 @@ pub fn player_control<R: Runtime>(app: tauri::AppHandle<R>, action: String) {
 
 #[tauri::command]
 pub fn resize_popup<R: Runtime>(app: tauri::AppHandle<R>, height: f64) {
-    if let Some(popup) = app.get_webview_window("tray-popup") {
-        let _ = popup.set_size(tauri::Size::Logical(tauri::LogicalSize { width: 340.0, height }));
-    }
+    let Some(popup) = app.get_webview_window("tray-popup") else { return };
+    let Ok(cur_size) = popup.inner_size() else { return };
+    let Ok(pos)      = popup.outer_position() else { return };
+
+    // Find the monitor the popup is actually on using physical coords
+    let cx = pos.x + cur_size.width  as i32 / 2;
+    let cy = pos.y + cur_size.height as i32 / 2;
+    let Some(monitor) = monitor_at(&app, cx, cy) else { return };
+
+    let scale    = monitor.scale_factor();
+    let margin   = (8.0 * scale) as i32;
+    let w_phys   = (340.0 * scale).round() as i32;
+    let start_h  = cur_size.height as i32;
+    let target_h = (height * scale).round() as i32;
+    let bottom   = pos.y + start_h;
+    let mp_x     = monitor.position().x;
+    let mp_y     = monitor.position().y;
+    let ms_w     = monitor.size().width as i32;
+    let ms_h     = monitor.size().height as i32;
+    let target_x = pos.x.clamp(mp_x + margin, mp_x + ms_w - w_phys - margin);
+
+    std::thread::spawn(move || {
+        const STEPS: u32 = 12;
+        const STEP_MS: u64 = 12;
+        for i in 1..=STEPS {
+            let t     = i as f64 / STEPS as f64;
+            let eased = 1.0 - (1.0 - t).powi(3);
+            let h     = (start_h as f64 + (target_h - start_h) as f64 * eased).round() as i32;
+            let y     = (bottom - h).clamp(mp_y + margin, mp_y + ms_h - h - margin);
+            let _ = popup.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                width: w_phys as u32, height: h as u32,
+            }));
+            let _ = popup.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: target_x, y,
+            }));
+            std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
+        }
+    });
 }
 
 #[tauri::command]

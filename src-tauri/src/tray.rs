@@ -1,24 +1,44 @@
 use tauri::{Runtime, WebviewUrl, WebviewWindowBuilder, Manager};
 
+/// Finds the monitor whose bounds contain the given physical point.
+/// Falls back to the closest monitor if none contains the point.
+pub fn monitor_at<R: Runtime>(app: &tauri::AppHandle<R>, px: i32, py: i32) -> Option<tauri::Monitor> {
+    let monitors = app.available_monitors().ok()?;
+    monitors.iter()
+        .find(|m| {
+            let p = m.position();
+            let s = m.size();
+            px >= p.x && px < p.x + s.width  as i32 &&
+            py >= p.y && py < p.y + s.height as i32
+        })
+        .or_else(|| {
+            monitors.iter().min_by_key(|m| {
+                let p = m.position();
+                let s = m.size();
+                let mx = p.x + s.width  as i32 / 2;
+                let my = p.y + s.height as i32 / 2;
+                (px - mx).abs() + (py - my).abs()
+            })
+        })
+        .cloned()
+}
+
 fn popup_pos_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join("popup_pos"))
 }
 
 fn save_popup_pos<R: Runtime>(app: &tauri::AppHandle<R>, popup: &tauri::WebviewWindow<R>) {
     let Ok(pos) = popup.outer_position() else { return };
-    let Ok(Some(monitor)) = app.primary_monitor() else { return };
-    let scale = monitor.scale_factor();
-    let x = pos.x as f64 / scale;
-    let y = pos.y as f64 / scale;
+    // Save physical pixels — unambiguous across monitors and DPI settings
     if let Some(path) = popup_pos_path(app) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(path, format!("{},{}", x, y));
+        let _ = std::fs::write(path, format!("{},{}", pos.x, pos.y));
     }
 }
 
-fn load_popup_pos<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<(f64, f64)> {
+fn load_popup_pos<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<(i32, i32)> {
     let path = popup_pos_path(app)?;
     let content = std::fs::read_to_string(path).ok()?;
     let (xs, ys) = content.split_once(',')?;
@@ -32,7 +52,6 @@ pub fn toggle_tray_popup<R: Runtime>(app: &tauri::AppHandle<R>) {
             let _ = popup.hide();
             return;
         }
-        // Existing hidden window — show at wherever it already is (user moved it this session)
         let _ = popup.show();
         let _ = popup.set_focus();
     } else {
@@ -51,9 +70,8 @@ pub fn toggle_tray_popup<R: Runtime>(app: &tauri::AppHandle<R>) {
         .visible(false)
         .build()
         {
-            // Restore last saved position; fall back to default bottom-right
             if let Some((x, y)) = load_popup_pos(app) {
-                let _ = popup.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+                let _ = popup.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
             } else {
                 position_popup(app, &popup, 205.0);
             }
