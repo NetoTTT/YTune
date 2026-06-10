@@ -21,8 +21,8 @@ fn clean_artist(raw: &str) -> String {
 
 pub struct DiscordState(pub Mutex<Option<DiscordIpcClient>>);
 
-// (title, song_start_ts, last_discord_update_unix, last_playing, last_thumbnail)
-pub struct DiscordTrackState(pub Mutex<(String, i64, i64, bool, String)>);
+// (title, song_start_ts, last_discord_update_unix, last_playing, last_thumbnail, last_liked)
+pub struct DiscordTrackState(pub Mutex<(String, i64, i64, bool, String, bool)>);
 
 pub fn start_discord_thread(handle: tauri::AppHandle) {
     std::thread::spawn(move || {
@@ -59,6 +59,7 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
     let title        = state["title"].as_str().unwrap_or("").to_string();
     let artist       = clean_artist(state["artist"].as_str().unwrap_or(""));
     let playing      = state["playing"].as_bool().unwrap_or(false);
+    let liked        = state["liked"].as_bool().unwrap_or(false);
     let current_time = state["currentTime"].as_f64().unwrap_or(0.0);
     let duration     = state["duration"].as_f64().unwrap_or(0.0);
     let thumbnail    = state["thumbnail"].as_str().unwrap_or("").to_string();
@@ -89,15 +90,17 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
         let song_changed      = t.0 != title;
         let play_changed      = t.3 != playing;
         let thumbnail_changed = t.4 != thumbnail && !thumbnail.is_empty();
+        let liked_changed     = t.5 != liked;
         let stale             = now_unix - t.2 >= 15;
 
         if song_changed {
-            *t = (title.clone(), song_start, now_unix, playing, thumbnail.clone());
+            *t = (title.clone(), song_start, now_unix, playing, thumbnail.clone(), liked);
             true
-        } else if play_changed || thumbnail_changed || stale {
+        } else if play_changed || thumbnail_changed || liked_changed || stale {
             t.2 = now_unix;
             t.3 = playing;
             t.4 = thumbnail.clone();
+            t.5 = liked;
             true
         } else {
             false
@@ -116,37 +119,35 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
         if let Some(discord) = app.try_state::<DiscordState>() {
             let mut guard = discord.0.lock().unwrap();
             if let Some(client) = guard.as_mut() {
+                let status_line = match (playing, liked) {
+                    (false, true)  => "❤️ Liked · Paused",
+                    (false, false) => "⏸ Paused",
+                    (true,  true)  => "❤️ Liked",
+                    (true,  false) => "",
+                };
+
                 let assets = if thumbnail.starts_with("https://") {
                     println!("[discord] thumb url: {}", &thumbnail[..thumbnail.len().min(80)]);
-                    activity::Assets::new()
-                        .large_image(&thumbnail)
-                        .large_text(&title)
+                    let a = activity::Assets::new().large_image(&thumbnail);
+                    if status_line.is_empty() { a } else { a.large_text(status_line) }
                 } else {
                     println!("[discord] no https thumb, using fallback. thumb={:?}", &thumbnail[..thumbnail.len().min(30)]);
-                    activity::Assets::new().large_image("ytmusic")
+                    let a = activity::Assets::new().large_image("ytmusic");
+                    if status_line.is_empty() { a } else { a.large_text(status_line) }
                 };
-                let result = if playing {
-                    client.set_activity(
-                        activity::Activity::new()
-                            .activity_type(activity::ActivityType::Listening)
-                            .status_display_type(activity::StatusDisplayType::Details)
-                            .details(&title)
-                            .state(&artist)
-                            .timestamps(activity::Timestamps::new().start(start_ts))
-                            .assets(assets),
-                    )
-                } else {
-                    client.set_activity(
-                        activity::Activity::new()
-                            .activity_type(activity::ActivityType::Listening)
-                            .status_display_type(activity::StatusDisplayType::Details)
-                            .details(&title)
-                            .state(&format!("{} · Paused", artist))
-                            .assets(assets),
-                    )
-                };
+
+                let mut act = activity::Activity::new()
+                    .activity_type(activity::ActivityType::Listening)
+                    .status_display_type(activity::StatusDisplayType::Details)
+                    .details(&title)
+                    .state(&artist)
+                    .assets(assets);
+                if playing {
+                    act = act.timestamps(activity::Timestamps::new().start(start_ts));
+                }
+                let result = client.set_activity(act);
                 match result {
-                    Ok(_)  => println!("[discord] set_activity ok title={:?} playing={}", title, playing),
+                    Ok(_)  => println!("[discord] set_activity ok title={:?} playing={} liked={}", title, playing, liked),
                     Err(e) => { println!("[discord] set_activity failed: {:?}", e); *guard = None; }
                 }
             }

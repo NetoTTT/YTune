@@ -24,7 +24,7 @@ pub fn run() {
             }
         }))
         .manage(DiscordState(Mutex::new(None)))
-        .manage(DiscordTrackState(Mutex::new((String::new(), 0, 0, false, String::new()))))
+        .manage(DiscordTrackState(Mutex::new((String::new(), 0, 0, false, String::new(), false))))
         .setup(|app| {
             // Listen for player state events emitted by the injected JS in the YTM webview.
             // Using events (plugin:event|emit) instead of commands because Tauri 2 only allows
