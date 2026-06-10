@@ -86,7 +86,6 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
 
     let should_update = if let Some(ts) = app.try_state::<DiscordTrackState>() {
         let mut t = ts.0.lock().unwrap();
-        let song_start        = now_unix - current_time as i64;
         let song_changed      = t.0 != title;
         let play_changed      = t.3 != playing;
         let thumbnail_changed = t.4 != thumbnail && !thumbnail.is_empty();
@@ -94,7 +93,8 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
         let stale             = now_unix - t.2 >= 15;
 
         if song_changed {
-            *t = (title.clone(), song_start, now_unix, playing, thumbnail.clone(), liked);
+            // Use now_unix as song_start to avoid stale currentTime from the previous track
+            *t = (title.clone(), now_unix, now_unix, playing, thumbnail.clone(), liked);
             true
         } else if play_changed || thumbnail_changed || liked_changed || stale {
             t.2 = now_unix;
