@@ -6,6 +6,8 @@ use tauri::{
 };
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 
+// struct CrossfadeState(Mutex<u64>);
+
 
 const DISCORD_CLIENT_ID: &str = "YOUR_CLIENT_ID_HERE";
 
@@ -67,38 +69,35 @@ const INJECT_JS: &str = r#"
         },
     };
 
+    // ── Crossfade (disabled — buggy, removed temporarily) ────────────
+    // window.__ytune_crossfade = window.__ytune_crossfade || 0;
+    // let _cfBaseVol  = 100;
+    // let _cfFadingIn = false;
+    // function updateFade() { ... }
+    // setInterval(updateFade, 100);
+
     // ── Image processing (runs here in music.youtube.com context) ──────
     // fetch() from music.youtube.com works fine against Google CDN (same company,
     // CORS allowed). The popup at localhost:1420 cannot do this — CORS is blocked
     // and the failure poisons the browser cache, breaking even plain <img> display.
     // One fetch produces both: a data URI for display and the dominant palette color.
-    let _palette   = { url: '', h: 280, s: 65 };
+    let _palette   = { url: '', h: [280, 280, 280], s: [65, 65, 65] };
     let _thumbData = { url: '', data: '' };
 
-    async function processImage(url) {
+    function processImage(url) {
         if (!url || url === _palette.url) return;
-        try {
-            const resp = await fetch(url);
-            if (!resp.ok) return;
-            const blobUrl = URL.createObjectURL(await resp.blob());
-
-            // Draw to 60×60 canvas — good enough for display (popup thumb is 52px)
-            // and for palette sampling (more pixels = more accurate than 20×20)
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = function() {
             const SIZE = 60;
             const c = document.createElement('canvas');
             c.width = c.height = SIZE;
             const ctx = c.getContext('2d');
-            await new Promise((res, rej) => {
-                const img = new Image();
-                img.onload = () => { ctx.drawImage(img, 0, 0, SIZE, SIZE); URL.revokeObjectURL(blobUrl); res(); };
-                img.onerror = () => { URL.revokeObjectURL(blobUrl); rej(); };
-                img.src = blobUrl;
-            });
-
-            // Data URI for popup display — avoids any CORS issue on the popup side
+            const s = Math.min(img.naturalWidth, img.naturalHeight);
+            const sx = (img.naturalWidth - s) / 2;
+            const sy = (img.naturalHeight - s) / 2;
+            ctx.drawImage(img, sx, sy, s, s, 0, 0, SIZE, SIZE);
             _thumbData = { url, data: c.toDataURL('image/jpeg', 0.85) };
-
-            // Palette from canvas pixels
             const { data } = ctx.getImageData(0, 0, SIZE, SIZE);
             const bkts = Array.from({length:12}, () => ({n:0,h:0,s:0}));
             for (let i = 0; i < data.length; i += 4) {
@@ -117,9 +116,18 @@ const INJECT_JS: &str = r#"
                 bkts[bk].n++;
                 if(s>bkts[bk].s){bkts[bk].h=h*360;bkts[bk].s=s;}
             }
-            const dom = bkts.reduce((a,b)=>b.n>a.n?b:a);
-            _palette = { url, h: dom.n>0 ? Math.round(dom.h) : 280, s: dom.n>0 ? Math.round(dom.s*100) : 65 };
-        } catch(e) { /* keep previous data on error; will retry next time URL changes */ }
+            const dom = bkts.slice().sort((a,b)=>b.n-a.n);
+            _palette = {
+                url,
+                h: dom.slice(0,3).map(b => b.n>0 ? Math.round(b.h) : 280),
+                s: dom.slice(0,3).map(b => b.n>0 ? Math.round(b.s*100) : 65),
+            };
+            console.log(`[ytune] 🎨 extracted palettes:`, JSON.stringify(_palette.h), JSON.stringify(_palette.s));
+        };
+        img.onerror = function() {
+            console.warn('[ytune] processImage load error for:', url);
+        };
+        img.src = url;
     }
 
     function getQueue() {
@@ -178,12 +186,61 @@ const INJECT_JS: &str = r#"
             || null;
     }
 
+    function getVideoId() {
+        const el = document.querySelector('ytmusic-player');
+        if (el) {
+            const id = el.getAttribute('video-id') || el.getAttribute('videoId');
+            if (id) return id;
+        }
+        const href = document.querySelector('ytmusic-player-queue-item[selected] a')?.href;
+        if (href) {
+            try { return new URL(href).searchParams.get('v') || ''; } catch(e) {}
+        }
+        try { const canon = document.querySelector('link[rel="canonical"]')?.href; if (canon) return new URL(canon).searchParams.get('v') || ''; } catch(e) {}
+        try { return new URLSearchParams(window.location.search).get('v') || ''; } catch(e) { return ''; }
+    }
+
+    function cleanThumbUrl(url) {
+        if (!url) return url;
+        const qi = url.indexOf('?');
+        return qi > 0 ? url.substring(0, qi) : url;
+    }
+
+    function upgradeThumbUrl(url) {
+        if (!url) return url;
+        const googleMatch = url.match(/^(.*=)w\d+-h\d+/);
+        if (googleMatch) return googleMatch[1] + 'w640-h640';
+        if (url.includes('i.ytimg.com')) {
+            return url.replace(/\/hqdefault\.jpg/, '/maxresdefault.jpg')
+                      .replace(/\/sddefault\.jpg/, '/maxresdefault.jpg')
+                      .replace(/\/default\.jpg/, '/maxresdefault.jpg');
+        }
+        return url;
+    }
+
+    function getThumbUrl() {
+        // Most reliable: Media Session API (set by YTM for all content types)
+        try {
+            const artwork = navigator.mediaSession.metadata?.artwork;
+            if (artwork && artwork.length > 0) {
+                const src = artwork[artwork.length - 1]?.src || artwork[0]?.src;
+                if (src) return upgradeThumbUrl(cleanThumbUrl(src));
+            }
+        } catch(e) {}
+        // Fallback: DOM selectors for album art
+        const found = document.querySelector('ytmusic-player-bar ytmusic-thumbnail img')?.src
+                   || document.querySelector('ytmusic-player-bar img[src*="googleusercontent"]')?.src;
+        if (found) return upgradeThumbUrl(cleanThumbUrl(found));
+        // Last resort: video ID from page elements
+        const vid = getVideoId();
+        if (vid) return 'https://i.ytimg.com/vi/' + vid + '/maxresdefault.jpg';
+        return '';
+    }
+
     function getState() {
         const video = getActiveVideo();
         const times = getDisplayedTimes();
-        const thumb = document.querySelector('ytmusic-player-bar ytmusic-thumbnail img')?.src
-                   || document.querySelector('ytmusic-player-bar img[src*="googleusercontent"]')?.src
-                   || '';
+        const thumb = getThumbUrl();
         // Fire-and-forget; updates _palette and _thumbData async for next poll cycle
         if (thumb && thumb !== _palette.url) processImage(thumb);
         return {
@@ -265,6 +322,7 @@ const INJECT_JS: &str = r#"
     let pollCount = 0;
     function startPolling() {
         console.log('[ytune] polling started');
+        // setInterval(updateFade, 100); // crossfade disabled
         setInterval(() => {
             const state = getState();
             pollCount++;
@@ -282,10 +340,11 @@ const INJECT_JS: &str = r#"
                 console.log('[ytune] poll #' + pollCount + ' title="' + state.title + '" playing=' + state.playing);
             }
             if (!state.title) return;
+            if (pollCount <= 3) console.log('[ytune] getState thumb=' + JSON.stringify(state.thumbnail));
             window.__TAURI_INTERNALS__.invoke('plugin:event|emit', {
                 event: 'ytune-state',
                 payload: state,
-            }).then(() => { if (pollCount <= 3) console.log('[ytune] emit OK'); })
+            }).then(() => { if (pollCount <= 3)             console.log('[ytune] emit OK', JSON.stringify({title: state.title, thumbnail: state.thumbnail, paletteH: state.paletteH, paletteS: state.paletteS})); })
               .catch(e => { if (pollCount % 10 === 1) console.error('[ytune] emit error:', e); });
         }, 1000);
     }
@@ -377,6 +436,14 @@ fn player_volume<R: Runtime>(app: tauri::AppHandle<R>, volume: f64) {
     }
 }
 
+// #[tauri::command]
+// fn set_crossfade<R: Runtime>(app: tauri::AppHandle<R>, state: tauri::State<'_, CrossfadeState>, duration: u64) {
+//     *state.0.lock().unwrap() = duration;
+//     if let Some(main) = app.get_webview_window("main") {
+//         let _ = main.eval(&format!("window.__ytune_crossfade={}", duration));
+//     }
+// }
+
 fn toggle_tray_popup<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(popup) = app.get_webview_window("tray-popup") {
         if popup.is_visible().unwrap_or(false) {
@@ -429,18 +496,27 @@ fn position_popup<R: Runtime>(app: &tauri::AppHandle<R>, popup: &tauri::WebviewW
 fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
     let Ok(state) = serde_json::from_str::<serde_json::Value>(payload) else { return };
 
+    // // Re-apply crossfade setting each poll (crossfade disabled)
+    // if let Some(cf) = app.try_state::<CrossfadeState>() { ... }
+
     let title        = state["title"].as_str().unwrap_or("").to_string();
     let artist       = state["artist"].as_str().unwrap_or("").to_string();
     let playing      = state["playing"].as_bool().unwrap_or(false);
     let current_time = state["currentTime"].as_f64().unwrap_or(0.0);
     let duration     = state["duration"].as_f64().unwrap_or(0.0);
 
+    let palette_h = state["paletteH"].as_i64().unwrap_or(280);
+    let palette_s = state["paletteS"].as_i64().unwrap_or(65);
+    let palette_str = match (state["paletteH"].as_array(), state["paletteS"].as_array()) {
+        (Some(hs), Some(ss)) => format!("{:?}/{:?}", hs, ss),
+        _ => format!("({},{})", palette_h, palette_s),
+    };
     let cur_m = (current_time as u64) / 60;
     let cur_s = (current_time as u64) % 60;
     let dur_m = (duration as u64) / 60;
     let dur_s = (duration as u64) % 60;
-    println!("[ytune] state: title={:?} playing={} time={}:{:02}/{}:{:02}",
-        title, playing, cur_m, cur_s, dur_m, dur_s);
+    println!("[ytune] state: title={:?} playing={} time={}:{:02}/{}:{:02} palette={}",
+        title, playing, cur_m, cur_s, dur_m, dur_s, palette_str);
 
     // Forward to tray popup
     let _ = app.emit("player_state_changed", &state);
@@ -473,6 +549,7 @@ pub fn run() {
             }
         }))
         .manage(DiscordState(Mutex::new(None)))
+        // .manage(CrossfadeState(Mutex::new(0)))
         .setup(|app| {
             // Listen for player state events emitted by the injected JS in the YTM webview.
             // Using events (plugin:event|emit) instead of commands because Tauri 2 only allows
@@ -530,9 +607,10 @@ pub fn run() {
                 }
             });
 
-            let show = MenuItem::with_id(app, "show", "Show ytune", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit",  "Quit",       true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let widget = MenuItem::with_id(app, "widget", "Open widget", true, None::<&str>)?;
+            let show   = MenuItem::with_id(app, "show",   "Show ytune",  true, None::<&str>)?;
+            let quit   = MenuItem::with_id(app, "quit",   "Quit",        true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&widget, &show, &quit])?;
 
             let tray_icon = tauri::image::Image::from_bytes(
                 include_bytes!("../icons/tray-icon.png")
@@ -542,7 +620,9 @@ pub fn run() {
                 .icon(tray_icon)
                 .tooltip("ytune")
                 .menu(&menu)
+                .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
+                    "widget" => toggle_tray_popup(app),
                     "show" => {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.show();
@@ -581,6 +661,7 @@ pub fn run() {
             player_control,
             player_seek,
             player_volume,
+            // set_crossfade,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

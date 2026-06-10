@@ -36,7 +36,12 @@
   let bgBase       = $state("art");     // "solid" | "art"  (background image)
   let bgViz        = $state("none");    // "none" | "cava" | "spectrum"
   let vizColorMode = $state("dynamic"); // "dynamic" | "fixed"  (bar color for cava/spectrum)
-  let lastPalette  = { h: 280, s: 65 };
+  let lastPalettes     = [{ h: 280, s: 65 }];
+  let currentPalette  = $state({ h: 280, s: 65 });
+  let cycleMode       = $state("none"); // "none" | "cycle"
+  // let crossfade       = $state(0);      // crossfade disabled
+  let cycleAnimFrame  = null;
+  let crossAnimFrame  = null;
   let isSeeking      = $state(false);
   let seekValue      = $state(0);
   let isVolAdjusting = false;
@@ -71,15 +76,85 @@
     root.style.setProperty('--grad',       `linear-gradient(135deg,hsl(${h},${S}%,62%),hsl(${H2},${S}%,62%))`);
   }
 
+  function lerpHue(a, b, t) {
+    let diff = b - a;
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    return ((a + diff * t) % 360 + 360) % 360;
+  }
+
+  function smoothToColor(targetH, targetS, onDone) {
+    if (crossAnimFrame) cancelAnimationFrame(crossAnimFrame);
+    if (cycleAnimFrame) { cancelAnimationFrame(cycleAnimFrame); cycleAnimFrame = null; }
+    const S = Math.max(45, targetS);
+    const fromH = currentPalette.h;
+    const fromS = currentPalette.s;
+    if (fromH === targetH && fromS === S) { if (onDone) onDone(); return; }
+    const start = performance.now();
+    const DURATION = 800;
+    function tick() {
+      const t = Math.min((performance.now() - start) / DURATION, 1);
+      const ease = 1 - Math.pow(1 - t, 3);
+      const h = lerpHue(fromH, targetH, ease);
+      const s = fromS + (S - fromS) * ease;
+      currentPalette = { h, s: Math.max(45, s) };
+      applyPalette(currentPalette.h, currentPalette.s);
+      if (t < 1) crossAnimFrame = requestAnimationFrame(tick);
+      else { currentPalette = { h: targetH, s: S }; applyPalette(targetH, S); if (onDone) onDone(); }
+    }
+    crossAnimFrame = requestAnimationFrame(tick);
+  }
+
+  function startCycle(palettes) {
+    if (cycleAnimFrame) cancelAnimationFrame(cycleAnimFrame);
+    const SEGMENT_MS = 3000;
+    const startedAt = performance.now();
+    function tick() {
+      const total = SEGMENT_MS * palettes.length;
+      const elapsed = (performance.now() - startedAt) % total;
+      const segMs = total / palettes.length;
+      const seg = Math.floor(elapsed / segMs);
+      const t0 = (elapsed % segMs) / segMs;
+      const t = t0 < 0.5 ? 2 * t0 * t0 : 1 - Math.pow(-2 * t0 + 2, 2) / 2;
+      const from = palettes[seg];
+      const to = palettes[(seg + 1) % palettes.length];
+      const h = lerpHue(from.h, to.h, t);
+      const s = from.s + (to.s - from.s) * t;
+      currentPalette = { h, s: Math.max(45, s) };
+      applyPalette(currentPalette.h, currentPalette.s);
+      cycleAnimFrame = requestAnimationFrame(tick);
+    }
+    cycleAnimFrame = requestAnimationFrame(tick);
+  }
+
+  function setCycleMode(mode) {
+    cycleMode = mode;
+    if (colorMode === "dynamic") {
+      if (crossAnimFrame) cancelAnimationFrame(crossAnimFrame);
+      if (cycleAnimFrame) { cancelAnimationFrame(cycleAnimFrame); cycleAnimFrame = null; }
+      if (mode === "cycle" && lastPalettes.length > 1) startCycle(lastPalettes);
+      else { currentPalette = { ...lastPalettes[0] }; applyPalette(lastPalettes[0].h, Math.max(45, lastPalettes[0].s)); }
+    }
+    saveConfig();
+  }
+
+  // function setCrossfade(val) { // crossfade disabled
+  //   crossfade = val;
+  //   invoke("set_crossfade", { duration: val });
+  //   saveConfig();
+  // }
+
   // ── Config persistence ────────────────────────────────────────────
   function loadConfig() {
     try {
       const raw = localStorage.getItem("ytune-config");
       if (!raw) return;
       const cfg  = JSON.parse(raw);
-      colorMode    = cfg.colorMode    || "dynamic";
-      fixedTheme   = cfg.fixedTheme   ?? 0;
-      vizColorMode = cfg.vizColorMode || "dynamic";
+      colorMode         = cfg.colorMode         || "dynamic";
+      fixedTheme        = cfg.fixedTheme        ?? 0;
+      vizColorMode      = cfg.vizColorMode      || "dynamic";
+      cycleMode         = cfg.cycleMode         || "none";
+      // crossfade      = cfg.crossfade         ?? 0; // crossfade disabled
       // migrate old single bgMode field
       if (cfg.bgMode && !cfg.bgBase) {
         if      (cfg.bgMode === "solid")    { bgBase = "solid"; bgViz = "none"; }
@@ -96,7 +171,7 @@
   function saveConfig() {
     try {
       localStorage.setItem("ytune-config", JSON.stringify({
-        colorMode, fixedTheme, bgBase, bgViz, vizColorMode,
+        colorMode, fixedTheme, bgBase, bgViz, vizColorMode, cycleMode,
       }));
     } catch {}
   }
@@ -108,19 +183,27 @@
   const CFG_VIZ    = 76;  // bar color section (only when bgMode=cava|spectrum)
 
   const CFG_VIZ_OPT   = 76; // visualizer row (always shown in config)
+  const CFG_SMOOTH    = 76; // smooth transitions toggle (only when colorMode=dynamic)
+  const CFG_CROSSFADE = 76; // crossfade selector (always shown)
 
   function syncConfigSize() {
     if (!showConfig) { syncSize(); return; }
-    let h = CFG_BASE + CFG_BG + CFG_VIZ_OPT;
+    let h = CFG_BASE + CFG_BG + CFG_VIZ_OPT + CFG_CROSSFADE;
     if (colorMode === "fixed")                           h += CFG_PRESET;
+    if (colorMode === "dynamic")                         h += CFG_SMOOTH;
     if (bgViz === "cava" || bgViz === "spectrum")        h += CFG_VIZ;
     invoke("resize_popup", { height: h });
   }
 
   function setColorMode(mode) {
     colorMode = mode;
-    applyPalette(mode === "fixed" ? THEMES[fixedTheme].h : lastPalette.h,
-                 mode === "fixed" ? THEMES[fixedTheme].s : lastPalette.s);
+    if (crossAnimFrame) cancelAnimationFrame(crossAnimFrame);
+    if (cycleAnimFrame) { cancelAnimationFrame(cycleAnimFrame); cycleAnimFrame = null; }
+    const h = mode === "fixed" ? THEMES[fixedTheme].h : lastPalettes[0].h;
+    const s = mode === "fixed" ? THEMES[fixedTheme].s : lastPalettes[0].s;
+    currentPalette = { h, s: Math.max(45, s) };
+    applyPalette(h, s);
+    if (mode === "dynamic" && cycleMode === "cycle" && lastPalettes.length > 1) startCycle(lastPalettes);
     syncConfigSize();
     saveConfig();
   }
@@ -128,7 +211,11 @@
   function selectTheme(index) {
     fixedTheme = index;
     colorMode  = "fixed";
-    applyPalette(THEMES[index].h, THEMES[index].s);
+    if (crossAnimFrame) cancelAnimationFrame(crossAnimFrame);
+    if (cycleAnimFrame) { cancelAnimationFrame(cycleAnimFrame); cycleAnimFrame = null; }
+    const t = THEMES[index];
+    currentPalette = { h: t.h, s: Math.max(45, t.s) };
+    applyPalette(t.h, t.s);
     syncConfigSize();
     saveConfig();
   }
@@ -160,7 +247,7 @@
 
   // ── Visualizer ────────────────────────────────────────────────────
   function vizColor(alpha = 1) {
-    const p = vizColorMode === "dynamic" ? lastPalette : THEMES[fixedTheme];
+    const p = vizColorMode === "dynamic" ? currentPalette : THEMES[fixedTheme];
     return `hsla(${p.h},${Math.max(45, p.s)}%,62%,${alpha})`;
   }
 
@@ -240,8 +327,11 @@
     await tick();
     vizCanvas = document.querySelector('canvas') ?? document.querySelector('.viz-canvas');
     loadConfig();
-    applyPalette(colorMode === "fixed" ? THEMES[fixedTheme].h : 280,
-                 colorMode === "fixed" ? THEMES[fixedTheme].s : 65);
+    const initH = colorMode === "fixed" ? THEMES[fixedTheme].h : 280;
+    const initS = colorMode === "fixed" ? THEMES[fixedTheme].s : 65;
+    currentPalette = { h: initH, s: initS };
+    applyPalette(initH, initS);
+    // invoke("set_crossfade", { duration: crossfade }); // crossfade disabled
     if (bgViz === "cava" || bgViz === "spectrum") startViz();
     unlistenViz = await listen("player-viz", (e) => {
       try {
@@ -278,8 +368,19 @@
       }
 
       // Palette pre-computed by injection script (~1s after song change)
-      lastPalette = { h: p.paletteH ?? 280, s: p.paletteS ?? 65 };
-      if (colorMode === "dynamic") applyPalette(lastPalette.h, lastPalette.s);
+      const newPalettes = Array.isArray(p.paletteH)
+        ? p.paletteH.map((h, i) => ({ h, s: p.paletteS?.[i] ?? 65 }))
+        : p.paletteH !== undefined
+          ? [{ h: p.paletteH, s: p.paletteS ?? 65 }]
+          : [{ h: 280, s: 65 }];
+      if (songChanged || newPalettes[0].h !== lastPalettes[0].h) {
+        lastPalettes = newPalettes;
+        if (colorMode === "dynamic") {
+          smoothToColor(newPalettes[0].h, newPalettes[0].s, () => {
+            if (cycleMode === "cycle" && newPalettes.length > 1) startCycle(newPalettes);
+          });
+        }
+      }
 
       title     = newTitle;
       artist    = p.artist    || "";
@@ -295,6 +396,8 @@
   });
 
   onDestroy(() => {
+    if (crossAnimFrame) cancelAnimationFrame(crossAnimFrame);
+    if (cycleAnimFrame) cancelAnimationFrame(cycleAnimFrame);
     unlisten?.();
     unlistenViz?.();
     stopViz();
@@ -411,6 +514,16 @@
         </div>
       </div>
 
+      {#if colorMode === "dynamic"}
+        <div class="cfg-section">
+          <p class="cfg-label">Transition</p>
+          <div class="mode-row">
+            <button class="mode-btn" class:mode-active={cycleMode === "none"}  onclick={() => setCycleMode("none")}>None</button>
+            <button class="mode-btn" class:mode-active={cycleMode === "cycle"} onclick={() => setCycleMode("cycle")}>Cycle</button>
+          </div>
+        </div>
+      {/if}
+
       {#if colorMode === "fixed"}
         <div class="cfg-section">
           <p class="cfg-label">Preset</p>
@@ -444,6 +557,17 @@
           <button class="mode-btn" class:mode-active={bgViz === "spectrum"} onclick={() => setBgViz("spectrum")}>Spectrum</button>
         </div>
       </div>
+
+      <!-- crossfade disabled
+      <div class="cfg-section">
+        <p class="cfg-label">Crossfade</p>
+        <div class="mode-row">
+          <button class="mode-btn" onclick={() => setCrossfade(0)}>Off</button>
+          <button class="mode-btn" onclick={() => setCrossfade(3)}>3s</button>
+          <button class="mode-btn" onclick={() => setCrossfade(5)}>5s</button>
+        </div>
+      </div>
+      -->
 
       {#if bgViz === "cava" || bgViz === "spectrum"}
         <div class="cfg-section">
