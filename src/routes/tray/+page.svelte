@@ -191,7 +191,7 @@
 
   const CFG_VIZ_OPT   = 76; // visualizer row (always shown in config)
   const CFG_SMOOTH    = 76; // smooth transitions toggle (only when colorMode=dynamic)
-  const CFG_CROSSFADE = 76; // crossfade selector (always shown)
+  const CFG_CROSSFADE = 76; // discord presence row
 
   function syncConfigSize() {
     if (!showConfig) { syncSize(); return; }
@@ -608,6 +608,7 @@
           <button class="mode-btn" class:mode-active={!discordEnabled} onclick={toggleDiscord}>Off</button>
         </div>
       </div>
+
     </section>
   {:else}
 
@@ -1006,5 +1007,6 @@
     border-color: #fff;
     box-shadow: 0 0 0 2px rgba(255,255,255,0.18);
   }
+
 
 </style>

@@ -525,7 +525,150 @@ pub const INJECT_JS: &str = r##"
         accountBtn.appendChild(makeSvg(
             'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'
         ));
-        accountBtn.addEventListener('click', () => console.log('[ytune] account btn clicked'));
+        // Account header dropdown
+        const _acctNS = 'http://www.w3.org/2000/svg';
+        const accountDropdown = document.createElement('div');
+        accountDropdown.id = 'ytune-account-dropdown';
+        accountDropdown.style.cssText = [
+            'position:fixed', 'z-index:10000',
+            'background:#1e1e1e', 'border:1px solid rgba(255,255,255,0.1)',
+            'border-radius:14px', 'padding:16px 20px',
+            'box-shadow:0 8px 32px rgba(0,0,0,0.6)',
+            'display:none', 'flex-direction:column', 'gap:10px',
+            'font-family:Roboto,sans-serif', 'color:#fff',
+            'min-width:180px', 'align-items:center',
+        ].join(';');
+
+        const _acctTitle = document.createElement('div');
+        _acctTitle.style.cssText = 'font-size:11px;font-weight:600;color:rgba(255,255,255,0.4);text-transform:uppercase;letter-spacing:0.8px;align-self:flex-start';
+        _acctTitle.textContent = 'ytune account';
+
+        const _loginRow = document.createElement('div');
+        _loginRow.id = 'ytune-login-row';
+        _loginRow.style.cssText = 'display:flex;gap:14px;justify-content:center;padding:8px 0';
+
+        function makeLoginCircle(bg, shadow, titleText, paths) {
+            const btn = document.createElement('button');
+            btn.title = titleText;
+            const st = [
+                'width:52px', 'height:52px', 'border-radius:50%',
+                'background:' + bg, 'border:none', 'cursor:pointer',
+                'display:flex', 'align-items:center', 'justify-content:center',
+                'transition:transform 0.15s', 'flex-shrink:0',
+            ];
+            if (shadow) st.push('box-shadow:' + shadow);
+            btn.style.cssText = st.join(';');
+            btn.addEventListener('mouseenter', () => { btn.style.transform = 'scale(1.1)'; });
+            btn.addEventListener('mouseleave', () => { btn.style.transform = 'scale(1)'; });
+            const svg = document.createElementNS(_acctNS, 'svg');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('width', '26'); svg.setAttribute('height', '26');
+            paths.forEach(function(item) {
+                const p = document.createElementNS(_acctNS, 'path');
+                p.setAttribute('d', item[0]); p.setAttribute('fill', item[1]);
+                svg.appendChild(p);
+            });
+            btn.appendChild(svg);
+            return btn;
+        }
+
+        const _discordCircle = makeLoginCircle('#5865F2', null, 'Login with Discord', [
+            ['M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.04.034.052a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z', '#fff'],
+        ]);
+        _discordCircle.addEventListener('click', function() {
+            window.__TAURI_INTERNALS__.invoke('plugin:opener|open_url', {
+                url: 'https://ytune.asktome.com.br/auth/discord',
+            }).catch(function() {});
+            accountDropdown.style.display = 'none';
+        });
+
+        const _googleCircle = makeLoginCircle('#fff', '0 2px 8px rgba(0,0,0,0.3)', 'Login with Google', [
+            ['M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z', '#4285F4'],
+            ['M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z', '#34A853'],
+            ['M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z', '#FBBC05'],
+            ['M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z', '#EA4335'],
+        ]);
+        _googleCircle.addEventListener('click', function() {
+            window.__TAURI_INTERNALS__.invoke('plugin:opener|open_url', {
+                url: 'https://ytune.asktome.com.br/auth/google',
+            }).catch(function() {});
+            accountDropdown.style.display = 'none';
+        });
+
+        _loginRow.appendChild(_discordCircle);
+        _loginRow.appendChild(_googleCircle);
+
+        const _userInfoRow = document.createElement('div');
+        _userInfoRow.id = 'ytune-user-info-drop';
+        _userInfoRow.style.cssText = 'display:none;flex-direction:column;align-items:center;gap:6px;width:100%';
+
+        const _userAvatar = document.createElement('div');
+        _userAvatar.style.cssText = 'width:44px;height:44px;border-radius:50%;background:#5865F2;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff';
+
+        const _userNameEl = document.createElement('div');
+        _userNameEl.style.cssText = 'font-size:14px;color:#fff;font-weight:500';
+
+        const _logoutEl = document.createElement('div');
+        _logoutEl.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.35);cursor:pointer;padding:4px 12px;border-radius:20px;transition:background 0.15s';
+        _logoutEl.textContent = 'Sign out';
+        _logoutEl.addEventListener('mouseenter', function() { _logoutEl.style.background = 'rgba(255,255,255,0.08)'; });
+        _logoutEl.addEventListener('mouseleave', function() { _logoutEl.style.background = 'transparent'; });
+        _logoutEl.addEventListener('click', function() {
+            localStorage.removeItem('ytune_token');
+            _refreshAllAccountUI();
+        });
+
+        _userInfoRow.appendChild(_userAvatar);
+        _userInfoRow.appendChild(_userNameEl);
+        _userInfoRow.appendChild(_logoutEl);
+
+        accountDropdown.appendChild(_acctTitle);
+        accountDropdown.appendChild(_loginRow);
+        accountDropdown.appendChild(_userInfoRow);
+
+        function _refreshAllAccountUI() {
+            const tok = localStorage.getItem('ytune_token');
+            if (tok) {
+                try {
+                    const b64 = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+                    const pay = JSON.parse(atob(b64));
+                    const name = pay.username || pay.name || pay.sub || 'User';
+                    _userAvatar.textContent = name[0].toUpperCase();
+                    _userNameEl.textContent = name;
+                    _userInfoRow.style.display = 'flex';
+                    _loginRow.style.display = 'none';
+                    _mAcctNameEl.textContent = name;
+                    _mAcctSubEl.textContent = '@' + name;
+                    _mAcctUserRow.style.display = 'flex';
+                    _mAcctLoginRow.style.display = 'none';
+                    return;
+                } catch(e) {}
+            }
+            _userInfoRow.style.display = 'none';
+            _loginRow.style.display = 'flex';
+            _mAcctSubEl.textContent = 'Login to scrobble';
+            _mAcctUserRow.style.display = 'none';
+            _mAcctLoginRow.style.display = 'flex';
+        }
+        window.__ytune__._refreshAllAccountUI = _refreshAllAccountUI;
+
+        function _positionAccountDropdown() {
+            const r = accountBtn.getBoundingClientRect();
+            accountDropdown.style.top  = (r.bottom + 8) + 'px';
+            accountDropdown.style.right = (window.innerWidth - r.right) + 'px';
+        }
+
+        accountBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const visible = accountDropdown.style.display === 'flex';
+            accountDropdown.style.display = visible ? 'none' : 'flex';
+            if (!visible) { _positionAccountDropdown(); _refreshAllAccountUI(); }
+        });
+
+        document.addEventListener('click', function(e) {
+            if (!accountDropdown.contains(e.target) && e.target !== accountBtn)
+                accountDropdown.style.display = 'none';
+        });
 
 // Open player button - vinyl turntable
         const playerBtn = document.createElement('button');
@@ -734,11 +877,78 @@ pub const INJECT_JS: &str = r##"
             'Coming soon'
         );
 
-        const itemAccount = makeModalItem(
-            'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z',
-            'ytune account',
-            'Coming soon'
-        );
+        // Dynamic ytune account item — shows login circles or logged-in state
+        const _mAcctSubEl = document.createElement('div');
+        _mAcctSubEl.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.4);margin-top:1px';
+        _mAcctSubEl.textContent = 'Login to scrobble';
+
+        const _mAcctLoginRow = document.createElement('div');
+        _mAcctLoginRow.style.cssText = 'display:flex;gap:10px;align-items:center;padding:6px 8px 10px 38px';
+
+        const _mAcctUserRow = document.createElement('div');
+        _mAcctUserRow.style.cssText = 'display:none;align-items:center;gap:8px;padding:4px 8px 10px 38px';
+
+        const _mAcctNameEl = document.createElement('span');
+        _mAcctNameEl.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.7);flex:1';
+
+        const itemAccount = (function() {
+            const _aNS = 'http://www.w3.org/2000/svg';
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'display:flex;flex-direction:column;border-radius:8px;overflow:hidden';
+
+            const hdr = document.createElement('div');
+            hdr.style.cssText = 'display:flex;align-items:center;gap:12px;padding:8px;cursor:default';
+            const asvg = document.createElementNS(_aNS, 'svg');
+            asvg.setAttribute('viewBox', '0 0 24 24');
+            asvg.setAttribute('width', '18'); asvg.setAttribute('height', '18');
+            asvg.setAttribute('fill', 'rgba(255,255,255,0.5)');
+            const ap = document.createElementNS(_aNS, 'path');
+            ap.setAttribute('d', 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z');
+            asvg.appendChild(ap); hdr.appendChild(asvg);
+            const atxt = document.createElement('div');
+            const albl = document.createElement('div');
+            albl.style.cssText = 'font-size:13px;color:#fff'; albl.textContent = 'ytune account';
+            atxt.appendChild(albl); atxt.appendChild(_mAcctSubEl);
+            hdr.appendChild(atxt); wrap.appendChild(hdr);
+
+            const aHint = document.createElement('span');
+            aHint.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.3)';
+            aHint.textContent = 'Sign in';
+            const mDiscBtn = makeLoginCircle('#5865F2', null, 'Discord', [
+                ['M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.04.034.052a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z', '#fff'],
+            ]);
+            mDiscBtn.style.width = '38px'; mDiscBtn.style.height = '38px';
+            mDiscBtn.addEventListener('click', function() {
+                window.__TAURI_INTERNALS__.invoke('plugin:opener|open_url', { url: 'https://ytune.asktome.com.br/auth/discord' }).catch(function() {});
+                modal.style.display = 'none';
+            });
+            const mGoogBtn = makeLoginCircle('#fff', '0 2px 6px rgba(0,0,0,0.3)', 'Google', [
+                ['M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z', '#4285F4'],
+                ['M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z', '#34A853'],
+                ['M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z', '#FBBC05'],
+                ['M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z', '#EA4335'],
+            ]);
+            mGoogBtn.style.width = '38px'; mGoogBtn.style.height = '38px';
+            mGoogBtn.addEventListener('click', function() {
+                window.__TAURI_INTERNALS__.invoke('plugin:opener|open_url', { url: 'https://ytune.asktome.com.br/auth/google' }).catch(function() {});
+                modal.style.display = 'none';
+            });
+            _mAcctLoginRow.appendChild(aHint);
+            _mAcctLoginRow.appendChild(mDiscBtn);
+            _mAcctLoginRow.appendChild(mGoogBtn);
+            wrap.appendChild(_mAcctLoginRow);
+
+            const mSignOut = document.createElement('span');
+            mSignOut.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.35);cursor:pointer;padding:2px 8px;border-radius:10px;transition:background 0.15s';
+            mSignOut.textContent = 'Sign out';
+            mSignOut.addEventListener('mouseenter', function() { mSignOut.style.background = 'rgba(255,255,255,0.08)'; });
+            mSignOut.addEventListener('mouseleave', function() { mSignOut.style.background = 'transparent'; });
+            mSignOut.addEventListener('click', function() { localStorage.removeItem('ytune_token'); _refreshAllAccountUI(); });
+            _mAcctUserRow.appendChild(_mAcctNameEl); _mAcctUserRow.appendChild(mSignOut);
+            wrap.appendChild(_mAcctUserRow);
+
+            return wrap;
+        })();
 
         // Discord presence toggle
         let _discordEnabled = true;
@@ -783,6 +993,7 @@ pub const INJECT_JS: &str = r##"
         modal.appendChild(itemScrobble);
         modal.appendChild(itemAccount);
         document.body.appendChild(modal);
+        document.body.appendChild(accountDropdown);
 
         function positionModal() {
             const r = menuBtn.getBoundingClientRect();
@@ -839,6 +1050,13 @@ pub const INJECT_JS: &str = r##"
     window.__ytune__.setDiscordState = function(enabled) {
         if (typeof window.__ytune__._setDiscordToggleUI === 'function')
             window.__ytune__._setDiscordToggleUI(enabled);
+    };
+
+    window.__ytune__.setAuthToken = function(token) {
+        if (token) localStorage.setItem('ytune_token', token);
+        else        localStorage.removeItem('ytune_token');
+        if (typeof window.__ytune__._refreshAllAccountUI === 'function')
+            window.__ytune__._refreshAllAccountUI();
     };
 
     function waitForHeaderButtons() {

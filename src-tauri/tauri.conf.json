@@ -15,6 +15,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["ytune"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

@@ -115,3 +115,9 @@ pub fn player_volume<R: Runtime>(app: tauri::AppHandle<R>, volume: f64) {
         let _ = main.eval(&format!("window.__ytune__?.setVolume({})", volume));
     }
 }
+
+#[tauri::command]
+pub fn get_auth_token<R: Runtime>(app: tauri::AppHandle<R>) -> Option<String> {
+    app.try_state::<crate::AuthTokenState>()
+        .and_then(|s| s.0.lock().ok()?.clone().into())
+}

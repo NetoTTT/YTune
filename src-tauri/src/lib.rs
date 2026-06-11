@@ -9,14 +9,19 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_deep_link::DeepLinkExt;
 
 use discord::{DiscordState, DiscordTrackState};
 use discord_rich_presence::DiscordIpc;
 use inject::INJECT_JS;
 
+pub struct AuthTokenState(pub Mutex<Option<String>>);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -25,10 +30,38 @@ pub fn run() {
         }))
         .manage(DiscordState(Mutex::new(None)))
         .manage(DiscordTrackState(Mutex::new((String::new(), 0, 0, false, String::new(), false))))
+        .manage(AuthTokenState(Mutex::new(None)))
         .setup(|app| {
             // Listen for player state events emitted by the injected JS in the YTM webview.
             // Using events (plugin:event|emit) instead of commands because Tauri 2 only allows
             // plugin commands from remote origins — user commands require a plugin + permission file.
+            let handle_auth = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    let url_str = url.to_string();
+                    if url_str.starts_with("ytune://auth/callback") {
+                        let token = url_str
+                            .split_once('?')
+                            .and_then(|(_, q)| q.split('&')
+                                .find(|p| p.starts_with("token="))
+                                .map(|p| p.trim_start_matches("token=").to_string())
+                            );
+                        if let Some(token) = token {
+                            if let Some(state) = handle_auth.try_state::<AuthTokenState>() {
+                                *state.0.lock().unwrap() = Some(token.clone());
+                            }
+                            let _ = handle_auth.emit("ytune-auth-token", &token);
+                            if let Some(w) = handle_auth.get_webview_window("main") {
+                                let token_js = token.replace('\\', "\\\\").replace('"', "\\\"");
+                                let _ = w.eval(&format!("window.__ytune__?.setAuthToken?.(\"{}\")", token_js));
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                }
+            });
+
             let handle = app.handle().clone();
             app.listen("ytune-state", move |event| {
                 discord::handle_player_state(&handle, event.payload());
@@ -160,6 +193,7 @@ pub fn run() {
             commands::player_volume,
             commands::discord_get,
             commands::discord_set,
+            commands::get_auth_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
