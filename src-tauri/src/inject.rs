@@ -1061,6 +1061,10 @@ pub const INJECT_JS: &str = r##"
 
         // Apply default palette immediately; will be updated when a song loads
         window.__ytune__.updateHeaderColors(280, 60);
+
+        // Restore logged-in state from persisted token on startup
+        _refreshAllAccountUI();
+
         console.log('[ytune] header buttons injected');
     }
 
