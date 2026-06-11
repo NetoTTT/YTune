@@ -522,9 +522,13 @@ pub const INJECT_JS: &str = r##"
 
         // Account circle
         const accountBtn = makeHBtn('ytune-account-btn', 'ytune account');
-        accountBtn.appendChild(makeSvg(
+        const _acctBtnSvg = makeSvg(
             'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'
-        ));
+        );
+        const _acctBtnImg = document.createElement('div');
+        _acctBtnImg.style.cssText = 'width:22px;height:22px;border-radius:50%;background-size:cover;background-position:center;display:none';
+        accountBtn.appendChild(_acctBtnSvg);
+        accountBtn.appendChild(_acctBtnImg);
         // Account header dropdown
         const _acctNS = 'http://www.w3.org/2000/svg';
         const accountDropdown = document.createElement('div');
@@ -576,8 +580,9 @@ pub const INJECT_JS: &str = r##"
             ['M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.04.034.052a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z', '#fff'],
         ]);
         _discordCircle.addEventListener('click', function() {
-            window.__TAURI_INTERNALS__.invoke('plugin:opener|open_url', {
-                url: 'https://ytune.asktome.com.br/auth/discord',
+            window.__TAURI_INTERNALS__.invoke('plugin:event|emit', {
+                event: 'ytune-open-url',
+                payload: 'https://ytune.asktome.com.br/auth/discord',
             }).catch(function() {});
             accountDropdown.style.display = 'none';
         });
@@ -589,8 +594,9 @@ pub const INJECT_JS: &str = r##"
             ['M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z', '#EA4335'],
         ]);
         _googleCircle.addEventListener('click', function() {
-            window.__TAURI_INTERNALS__.invoke('plugin:opener|open_url', {
-                url: 'https://ytune.asktome.com.br/auth/google',
+            window.__TAURI_INTERNALS__.invoke('plugin:event|emit', {
+                event: 'ytune-open-url',
+                payload: 'https://ytune.asktome.com.br/auth/google',
             }).catch(function() {});
             accountDropdown.style.display = 'none';
         });
@@ -633,10 +639,30 @@ pub const INJECT_JS: &str = r##"
                     const b64 = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
                     const pay = JSON.parse(atob(b64));
                     const name = pay.username || pay.name || pay.sub || 'User';
-                    _userAvatar.textContent = name[0].toUpperCase();
+                    if (pay.avatar) {
+                        _userAvatar.textContent = '';
+                        _userAvatar.style.backgroundImage = 'url(' + pay.avatar + ')';
+                        _userAvatar.style.backgroundSize = 'cover';
+                        _userAvatar.style.backgroundPosition = 'center';
+                        _acctBtnImg.style.backgroundImage = 'url(' + pay.avatar + ')';
+                        _acctBtnImg.style.display = 'block';
+                        _acctBtnSvg.style.display = 'none';
+                    } else {
+                        _userAvatar.style.backgroundImage = '';
+                        _userAvatar.textContent = name[0].toUpperCase();
+                        _acctBtnImg.style.display = 'none';
+                        _acctBtnSvg.style.display = '';
+                    }
                     _userNameEl.textContent = name;
                     _userInfoRow.style.display = 'flex';
                     _loginRow.style.display = 'none';
+                    if (pay.avatar) {
+                        _mAcctAvatarEl.textContent = '';
+                        _mAcctAvatarEl.style.backgroundImage = 'url(' + pay.avatar + ')';
+                    } else {
+                        _mAcctAvatarEl.style.backgroundImage = '';
+                        _mAcctAvatarEl.textContent = name[0].toUpperCase();
+                    }
                     _mAcctNameEl.textContent = name;
                     _mAcctSubEl.textContent = '@' + name;
                     _mAcctUserRow.style.display = 'flex';
@@ -646,6 +672,8 @@ pub const INJECT_JS: &str = r##"
             }
             _userInfoRow.style.display = 'none';
             _loginRow.style.display = 'flex';
+            _acctBtnImg.style.display = 'none';
+            _acctBtnSvg.style.display = '';
             _mAcctSubEl.textContent = 'Login to scrobble';
             _mAcctUserRow.style.display = 'none';
             _mAcctLoginRow.style.display = 'flex';
@@ -888,6 +916,9 @@ pub const INJECT_JS: &str = r##"
         const _mAcctUserRow = document.createElement('div');
         _mAcctUserRow.style.cssText = 'display:none;align-items:center;gap:8px;padding:4px 8px 10px 38px';
 
+        const _mAcctAvatarEl = document.createElement('div');
+        _mAcctAvatarEl.style.cssText = 'width:26px;height:26px;border-radius:50%;background:#5865F2;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0;background-size:cover;background-position:center';
+
         const _mAcctNameEl = document.createElement('span');
         _mAcctNameEl.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.7);flex:1';
 
@@ -919,7 +950,7 @@ pub const INJECT_JS: &str = r##"
             ]);
             mDiscBtn.style.width = '38px'; mDiscBtn.style.height = '38px';
             mDiscBtn.addEventListener('click', function() {
-                window.__TAURI_INTERNALS__.invoke('plugin:opener|open_url', { url: 'https://ytune.asktome.com.br/auth/discord' }).catch(function() {});
+                window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'ytune-open-url', payload: 'https://ytune.asktome.com.br/auth/discord' }).catch(function() {});
                 modal.style.display = 'none';
             });
             const mGoogBtn = makeLoginCircle('#fff', '0 2px 6px rgba(0,0,0,0.3)', 'Google', [
@@ -930,7 +961,7 @@ pub const INJECT_JS: &str = r##"
             ]);
             mGoogBtn.style.width = '38px'; mGoogBtn.style.height = '38px';
             mGoogBtn.addEventListener('click', function() {
-                window.__TAURI_INTERNALS__.invoke('plugin:opener|open_url', { url: 'https://ytune.asktome.com.br/auth/google' }).catch(function() {});
+                window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'ytune-open-url', payload: 'https://ytune.asktome.com.br/auth/google' }).catch(function() {});
                 modal.style.display = 'none';
             });
             _mAcctLoginRow.appendChild(aHint);
@@ -944,7 +975,7 @@ pub const INJECT_JS: &str = r##"
             mSignOut.addEventListener('mouseenter', function() { mSignOut.style.background = 'rgba(255,255,255,0.08)'; });
             mSignOut.addEventListener('mouseleave', function() { mSignOut.style.background = 'transparent'; });
             mSignOut.addEventListener('click', function() { localStorage.removeItem('ytune_token'); _refreshAllAccountUI(); });
-            _mAcctUserRow.appendChild(_mAcctNameEl); _mAcctUserRow.appendChild(mSignOut);
+            _mAcctUserRow.appendChild(_mAcctAvatarEl); _mAcctUserRow.appendChild(_mAcctNameEl); _mAcctUserRow.appendChild(mSignOut);
             wrap.appendChild(_mAcctUserRow);
 
             return wrap;
@@ -1005,7 +1036,7 @@ pub const INJECT_JS: &str = r##"
             e.stopPropagation();
             const visible = modal.style.display === 'flex';
             modal.style.display = visible ? 'none' : 'flex';
-            if (!visible) positionModal();
+            if (!visible) { positionModal(); _refreshAllAccountUI(); }
         });
 
         document.addEventListener('click', (e) => {

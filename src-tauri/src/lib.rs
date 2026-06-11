@@ -17,47 +17,68 @@ use inject::INJECT_JS;
 
 pub struct AuthTokenState(pub Mutex<Option<String>>);
 
+fn parse_auth_token(url_str: &str) -> Option<String> {
+    if !url_str.starts_with("ytune://auth/callback") {
+        return None;
+    }
+    url_str.split_once('?')
+        .and_then(|(_, q)| q.split('&')
+            .find(|p| p.starts_with("token="))
+            .map(|p| p.trim_start_matches("token=").to_string())
+        )
+}
+
+fn apply_auth_token(app: &tauri::AppHandle, token: String) {
+    if let Some(state) = app.try_state::<AuthTokenState>() {
+        *state.0.lock().unwrap() = Some(token.clone());
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let token_js = token.replace('\\', "\\\\").replace('"', "\\\"");
+        let _ = w.eval(&format!(
+            "window.__ytune__?.setAuthToken?.(\"{}\")",
+            token_js
+        ));
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Always show/focus the main window when a second instance is blocked
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.set_focus();
+            }
+            // On Windows, deep links arrive as args to the blocked second instance.
+            // single_instance forwards them here — deep_link's on_open_url won't fire.
+            for arg in &args {
+                if let Some(token) = parse_auth_token(arg) {
+                    apply_auth_token(app, token);
+                    break;
+                }
             }
         }))
         .manage(DiscordState(Mutex::new(None)))
         .manage(DiscordTrackState(Mutex::new((String::new(), 0, 0, false, String::new(), false))))
         .manage(AuthTokenState(Mutex::new(None)))
         .setup(|app| {
-            // Listen for player state events emitted by the injected JS in the YTM webview.
             // Using events (plugin:event|emit) instead of commands because Tauri 2 only allows
             // plugin commands from remote origins — user commands require a plugin + permission file.
+            let _ = app.deep_link().register_all();
+
+            // on_open_url fires when the app itself is launched with a deep link (first instance,
+            // or some platforms). On Windows with single_instance, see the callback above instead.
             let handle_auth = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
-                    let url_str = url.to_string();
-                    if url_str.starts_with("ytune://auth/callback") {
-                        let token = url_str
-                            .split_once('?')
-                            .and_then(|(_, q)| q.split('&')
-                                .find(|p| p.starts_with("token="))
-                                .map(|p| p.trim_start_matches("token=").to_string())
-                            );
-                        if let Some(token) = token {
-                            if let Some(state) = handle_auth.try_state::<AuthTokenState>() {
-                                *state.0.lock().unwrap() = Some(token.clone());
-                            }
-                            let _ = handle_auth.emit("ytune-auth-token", &token);
-                            if let Some(w) = handle_auth.get_webview_window("main") {
-                                let token_js = token.replace('\\', "\\\\").replace('"', "\\\"");
-                                let _ = w.eval(&format!("window.__ytune__?.setAuthToken?.(\"{}\")", token_js));
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
+                    if let Some(token) = parse_auth_token(&url.to_string()) {
+                        apply_auth_token(&handle_auth, token);
+                        break;
                     }
                 }
             });
@@ -67,9 +88,14 @@ pub fn run() {
                 discord::handle_player_state(&handle, event.payload());
             });
 
-            // Relay raw FFT data from the YTM webview to the popup window.
-            // event.payload() is already a JSON string (e.g. "[0,12,45,...]") — deserialize
-            // it back to a Value so the JS side receives an actual array, not a double-encoded string.
+            let handle_opener = app.handle().clone();
+            app.listen("ytune-open-url", move |event| {
+                if let Ok(url) = serde_json::from_str::<String>(event.payload()) {
+                    use tauri_plugin_opener::OpenerExt;
+                    let _ = handle_opener.opener().open_url(url, None::<&str>);
+                }
+            });
+
             let handle_popup = app.handle().clone();
             app.listen("ytune-toggle-popup", move |_| {
                 tray::toggle_tray_popup(&handle_popup);
@@ -93,7 +119,6 @@ pub fn run() {
                         if let Some(c) = g.as_mut() { let _ = c.clear_activity(); }
                     }
                 }
-                // eval into YTM for reliable delivery; emit for the popup to sync
                 if let Some(main) = handle_discord.get_webview_window("main") {
                     let _ = main.eval(&format!("window.__ytune__?.setDiscordState?.({})", new_val));
                 }
@@ -123,7 +148,6 @@ pub fn run() {
             .initialization_script(INJECT_JS)
             .build()?;
 
-            // Open DevTools after 4s so YTM has finished loading
             #[cfg(debug_assertions)]
             {
                 let h = app.handle().clone();
