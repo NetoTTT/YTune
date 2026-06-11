@@ -352,8 +352,11 @@ pub const INJECT_JS: &str = r##"
             paletteH:      _palette.h,
             paletteS:      _palette.s,
             thumbnailData: _palette.url === thumb ? (_thumbData.display || _thumbData.data) : '',
-            // Discord's image proxy can't fetch yt3.googleusercontent.com — use ytimg CDN instead
+            // Discord's image proxy can't fetch yt3.googleusercontent.com — use ytimg CDN instead.
+            // Prefer thumb when it's already i.ytimg.com (Media Session API, updates immediately);
+            // getVideoId() reads ytmusic-player[video-id] which can lag several polls behind.
             thumbnailDiscord: (function() {
+                if (thumb && thumb.includes('i.ytimg.com')) return thumb;
                 const vid = getVideoId();
                 if (vid) return 'https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg';
                 return thumb || '';
