@@ -71,7 +71,7 @@ fn animate_popup(
     margin: i32,
 ) {
     std::thread::spawn(move || {
-        const DURATION_MS: f64 = 160.0;
+        const DURATION_MS: f64 = 90.0;
         let start = std::time::Instant::now();
         loop {
             let elapsed = start.elapsed().as_secs_f64() * 1000.0;

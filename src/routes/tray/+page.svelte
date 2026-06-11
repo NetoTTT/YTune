@@ -256,7 +256,7 @@
     showQueue  = false;
     await tick(); // let DOM settle before swapping content
     syncConfigSize(); // start window resize first
-    await new Promise(r => setTimeout(r, 60)); // let resize start before content appears
+    await new Promise(r => setTimeout(r, 30)); // let resize start before content appears
     showConfig = true;
   }
   async function closeConfig() {
@@ -522,10 +522,9 @@
       await tick();
       const qEl = document.querySelector('section.queue');
       if (qEl) {
-        const overflow = qEl.scrollHeight - qEl.clientHeight;
-        if (overflow > 0) {
-          invoke("resize_popup", { height: window.innerHeight + overflow + 4 });
-        }
+        // clientHeight = actual rendered height of queue (flex:none, capped by max-height)
+        // grow window by that amount so .info section isn't stolen from
+        invoke("resize_popup", { height: window.innerHeight + qEl.clientHeight + 8 });
       }
     }
   }
@@ -554,7 +553,7 @@
   );
 </script>
 
-<main data-tauri-drag-region>
+<main data-tauri-drag-region class:queue-open={showQueue}>
 
   <!-- Blurred album art background — only when bgBase is "art" -->
   {#if bgBase === "art" && (thumbnailData || thumbnail)}
@@ -999,6 +998,25 @@
     .title { font-size: clamp(14px, 2.8vh, 24px); }
     .artist { font-size: clamp(11px, 1.8vh, 16px); }
   }
+  /* Queue open: hide text, let thumb fill the info area in all 3 layout tiers */
+  main.queue-open .info-text { display: none; }
+  main.queue-open .info {
+    flex-direction: column !important;
+    justify-content: center;
+    align-items: center;
+  }
+  main.queue-open .thumb {
+    flex: 1 !important;
+    min-height: 0;
+    width: auto !important;
+    height: auto !important;
+    max-width: 100%;
+    max-height: 100%;
+    aspect-ratio: 1;
+    border-radius: clamp(8px, 2vh, 18px) !important;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.7) !important;
+  }
+
   .title.scrolling, .artist.scrolling {
     animation: marquee-scroll 3.5s ease-in-out infinite;
   }
@@ -1095,7 +1113,7 @@
   .vol-pct { font-size: 10px; color: #636366; width: 28px; text-align: right; flex-shrink: 0; }
 
   /* Queue */
-  .queue { border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: none; animation: panel-enter 160ms ease-out both; }
+  .queue { border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; flex: none; max-height: 340px; overflow-y: auto; scrollbar-width: none; animation: panel-enter 80ms ease-out both; }
   .queue::-webkit-scrollbar { display: none; }
   .queue-label {
     font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -1147,7 +1165,7 @@
     gap: 18px;
     padding: 6px 0 4px;
     flex: 1;
-    animation: panel-enter 140ms ease-out both;
+    animation: panel-enter 80ms ease-out both;
   }
   .cfg-section { display: flex; flex-direction: column; gap: 8px; }
   .cfg-label {
