@@ -358,7 +358,7 @@ pub const INJECT_JS: &str = r##"
             thumbnailDiscord: (function() {
                 if (thumb && thumb.includes('i.ytimg.com')) return thumb;
                 const vid = getVideoId();
-                if (vid) return 'https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg';
+                if (vid) return 'https://i.ytimg.com/vi/' + vid + '/maxresdefault.jpg';
                 return thumb || '';
             })(),
         };
