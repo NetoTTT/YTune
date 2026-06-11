@@ -181,11 +181,14 @@ pub const INJECT_JS: &str = r##"
         return all.slice(Math.max(0, ci - 2), Math.min(all.length, ci + 4));
     }
 
-    // Parse "m:ss" or "mm:ss" text to seconds
+    // Parse "m:ss", "mm:ss", or "h:mm:ss" text to seconds
     function parseMmSs(text) {
         if (!text) return 0;
-        const m = String(text).trim().match(/^(\d+):(\d{2})$/);
-        return m ? +m[1] * 60 + +m[2] : 0;
+        const parts = String(text).trim().split(':').map(Number);
+        if (parts.some(isNaN)) return 0;
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        return 0;
     }
 
     // YTM uses a continuous DASH stream — video.currentTime and video.duration reflect
@@ -241,13 +244,10 @@ pub const INJECT_JS: &str = r##"
 
     function upgradeThumbUrl(url) {
         if (!url) return url;
+        // Google Photos CDN: resize to 640px square (path param, no query string)
         const googleMatch = url.match(/^(.*=)w\d+-h\d+/);
         if (googleMatch) return googleMatch[1] + 'w640-h640';
-        if (url.includes('i.ytimg.com')) {
-            return url.replace(/\/hqdefault\.jpg/, '/maxresdefault.jpg')
-                      .replace(/\/sddefault\.jpg/, '/maxresdefault.jpg')
-                      .replace(/\/default\.jpg/, '/maxresdefault.jpg');
-        }
+        // ytimg: don't upgrade quality — maxresdefault doesn't exist for all videos
         return url;
     }
 
@@ -257,16 +257,21 @@ pub const INJECT_JS: &str = r##"
             const artwork = navigator.mediaSession.metadata?.artwork;
             if (artwork && artwork.length > 0) {
                 const src = artwork[artwork.length - 1]?.src || artwork[0]?.src;
-                if (src) return upgradeThumbUrl(cleanThumbUrl(src));
+                if (src) {
+                    // ytimg URLs carry signed params (sqp/rs) — keep them as-is
+                    // Google CDN URLs use path-based sizing — clean and upgrade those
+                    if (src.includes('i.ytimg.com')) return src;
+                    return upgradeThumbUrl(cleanThumbUrl(src));
+                }
             }
         } catch(e) {}
         // Fallback: DOM selectors for album art
         const found = document.querySelector('ytmusic-player-bar ytmusic-thumbnail img')?.src
                    || document.querySelector('ytmusic-player-bar img[src*="googleusercontent"]')?.src;
         if (found) return upgradeThumbUrl(cleanThumbUrl(found));
-        // Last resort: video ID from page elements
+        // Last resort: video ID — hqdefault always exists, maxresdefault does not
         const vid = getVideoId();
-        if (vid) return 'https://i.ytimg.com/vi/' + vid + '/maxresdefault.jpg';
+        if (vid) return 'https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg';
         return '';
     }
 

@@ -62,59 +62,80 @@ pub fn player_control<R: Runtime>(app: tauri::AppHandle<R>, action: String) {
     }
 }
 
+fn animate_popup(
+    popup: tauri::WebviewWindow<impl Runtime>,
+    start_w: i32, start_h: i32,
+    target_w: i32, target_h: i32,
+    start_x: i32, bottom: i32,
+    mp_x: i32, mp_y: i32, ms_w: i32, ms_h: i32,
+    margin: i32,
+) {
+    std::thread::spawn(move || {
+        const DURATION_MS: f64 = 160.0;
+        let start = std::time::Instant::now();
+        loop {
+            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            let t = (elapsed / DURATION_MS).min(1.0);
+            let e = 1.0 - (1.0 - t).powi(3); // ease-out cubic
+            let w = (start_w as f64 + (target_w - start_w) as f64 * e).round() as i32;
+            let h = (start_h as f64 + (target_h - start_h) as f64 * e).round() as i32;
+            let x = start_x.clamp(mp_x + margin, mp_x + ms_w - w - margin);
+            let y = (bottom - h).clamp(mp_y + margin, mp_y + ms_h - h - margin);
+            let _ = popup.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                width: w as u32, height: h as u32,
+            }));
+            let _ = popup.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+            if t >= 1.0 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
+    });
+}
+
 #[tauri::command]
 pub fn set_popup_size<R: Runtime>(app: tauri::AppHandle<R>, width: f64, height: f64) {
-    let Some(popup) = app.get_webview_window("tray-popup") else { return };
-    let Ok(pos)     = popup.outer_position()               else { return };
-    let Ok(Some(m)) = popup.current_monitor()              else { return };
-    let scale = m.scale_factor();
-    let _ = popup.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-        width:  (width  * scale).round() as u32,
-        height: (height * scale).round() as u32,
-    }));
-    let _ = popup.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: pos.x, y: pos.y }));
+    let Some(popup)   = app.get_webview_window("tray-popup") else { return };
+    let Ok(cur_size)  = popup.inner_size()                   else { return };
+    let Ok(pos)       = popup.outer_position()               else { return };
+    let cx = pos.x + cur_size.width  as i32 / 2;
+    let cy = pos.y + cur_size.height as i32 / 2;
+    let Some(monitor) = monitor_at(&app, cx, cy) else { return };
+    let scale  = monitor.scale_factor();
+    let margin = (8.0 * scale) as i32;
+    let mp_x   = monitor.position().x;
+    let mp_y   = monitor.position().y;
+    let ms_w   = monitor.size().width  as i32;
+    let ms_h   = monitor.size().height as i32;
+    let target_w = (width  * scale).round() as i32;
+    let target_h = (height * scale).round() as i32;
+    let bottom   = pos.y + cur_size.height as i32;
+    animate_popup(popup,
+        cur_size.width as i32, cur_size.height as i32,
+        target_w, target_h,
+        pos.x, bottom, mp_x, mp_y, ms_w, ms_h, margin,
+    );
 }
 
 #[tauri::command]
 pub fn resize_popup<R: Runtime>(app: tauri::AppHandle<R>, height: f64) {
-    let Some(popup) = app.get_webview_window("tray-popup") else { return };
-    let Ok(cur_size) = popup.inner_size() else { return };
-    let Ok(pos)      = popup.outer_position() else { return };
-
-    // Find the monitor the popup is actually on using physical coords
+    let Some(popup)   = app.get_webview_window("tray-popup") else { return };
+    let Ok(cur_size)  = popup.inner_size()                   else { return };
+    let Ok(pos)       = popup.outer_position()               else { return };
     let cx = pos.x + cur_size.width  as i32 / 2;
     let cy = pos.y + cur_size.height as i32 / 2;
     let Some(monitor) = monitor_at(&app, cx, cy) else { return };
-
     let scale    = monitor.scale_factor();
     let margin   = (8.0 * scale) as i32;
-    let w_phys   = cur_size.width as i32;
-    let start_h  = cur_size.height as i32;
-    let target_h = (height * scale).round() as i32;
-    let bottom   = pos.y + start_h;
     let mp_x     = monitor.position().x;
     let mp_y     = monitor.position().y;
-    let ms_w     = monitor.size().width as i32;
+    let ms_w     = monitor.size().width  as i32;
     let ms_h     = monitor.size().height as i32;
-    let target_x = pos.x.clamp(mp_x + margin, mp_x + ms_w - w_phys - margin);
-
-    std::thread::spawn(move || {
-        const STEPS: u32 = 12;
-        const STEP_MS: u64 = 12;
-        for i in 1..=STEPS {
-            let t     = i as f64 / STEPS as f64;
-            let eased = 1.0 - (1.0 - t).powi(3);
-            let h     = (start_h as f64 + (target_h - start_h) as f64 * eased).round() as i32;
-            let y     = (bottom - h).clamp(mp_y + margin, mp_y + ms_h - h - margin);
-            let _ = popup.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-                width: w_phys as u32, height: h as u32,
-            }));
-            let _ = popup.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                x: target_x, y,
-            }));
-            std::thread::sleep(std::time::Duration::from_millis(STEP_MS));
-        }
-    });
+    let target_h = (height * scale).round() as i32;
+    let bottom   = pos.y + cur_size.height as i32;
+    animate_popup(popup,
+        cur_size.width as i32, cur_size.height as i32,
+        cur_size.width as i32, target_h,
+        pos.x, bottom, mp_x, mp_y, ms_w, ms_h, margin,
+    );
 }
 
 #[tauri::command]

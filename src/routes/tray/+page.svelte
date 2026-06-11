@@ -57,9 +57,9 @@
   // ── Visualizer canvas ─────────────────────────────────────────────
   let vizCanvas = null; // set in onMount via querySelector — bind:this unreliable in runes mode
   let vizFrame;
-  const VIZ_N   = 24;
-  let vizBars    = Array(VIZ_N).fill(0);
-  let vizTargets = Array(VIZ_N).fill(0);
+  const VIZ_MAX  = 64; // internal resolution — never changes
+  let vizBars    = Array(VIZ_MAX).fill(0);
+  let vizTargets = Array(VIZ_MAX).fill(0);
   let vizPhase   = 0;
   let rawBars    = Array(32).fill(0); // real FFT data from Web Audio API
 
@@ -247,18 +247,21 @@
   let preConfigH = 225;
   let preConfigW = 330;
 
-  function openConfig() {
+  async function openConfig() {
     preConfigH = window.innerHeight
       - (showVolume ? VOL_H : 0)
       - (showQueue  ? QUEUE_H : 0);
     preConfigW = window.innerWidth;
     showVolume = false;
     showQueue  = false;
+    await tick(); // let DOM settle before swapping content
+    syncConfigSize(); // start window resize first
+    await new Promise(r => setTimeout(r, 60)); // let resize start before content appears
     showConfig = true;
-    syncConfigSize();
   }
-  function closeConfig() {
+  async function closeConfig() {
     showConfig = false;
+    await tick(); // let music content render before shrinking
     invoke("set_popup_size", { width: preConfigW, height: preConfigH });
   }
 
@@ -270,12 +273,14 @@
 
   function drawBars(ctx, w, h) {
     ctx.clearRect(0, 0, w, h);
-    const half = Math.floor(VIZ_N / 2); // 12
-    const barW = w / VIZ_N;
-    for (let i = 0; i < VIZ_N; i++) {
-      // Mirror: left side reversed (treble→bass), right side normal (bass→treble)
+    const n    = Math.max(16, Math.min(VIZ_MAX, Math.round(w / 14)));
+    const half = Math.floor(n / 2);
+    const barW = w / n;
+    for (let i = 0; i < n; i++) {
       const barIdx = i < half ? (half - 1 - i) : (i - half);
-      const v = vizBars[barIdx];
+      // map drawn bar → internal array (proportional sampling)
+      const srcI = Math.floor(barIdx * (VIZ_MAX / 2) / Math.max(1, half));
+      const v = vizBars[Math.min(srcI, VIZ_MAX - 1)];
       const x = i * barW + 1;
       if (bgViz === "cava") {
         const bh = v * h * 0.85;
@@ -301,21 +306,21 @@
       vizPhase += 0.025;
       const hasRealData = rawBars.some(v => v > 0);
       if (hasRealData) {
-        for (let i = 0; i < VIZ_N; i++) {
-          const srcI = Math.floor(i * rawBars.length / VIZ_N);
+        for (let i = 0; i < VIZ_MAX; i++) {
+          const srcI = Math.floor(i * rawBars.length / VIZ_MAX);
           vizTargets[i] = playing ? rawBars[srcI] / 255 : 0;
         }
       } else {
-        for (let i = 0; i < VIZ_N; i++) {
+        for (let i = 0; i < VIZ_MAX; i++) {
           if (!playing) { vizTargets[i] = 0.02; continue; }
-          const base  = Math.max(0, 1 - i / VIZ_N * 0.55) * 0.35;
+          const base  = Math.max(0, 1 - i / VIZ_MAX * 0.55) * 0.35;
           const noise = Math.sin(vizPhase * 2.1 + i * 0.6) * 0.28
                       + Math.sin(vizPhase * 0.9 + i * 1.1) * 0.18
                       + Math.sin(vizPhase * 3.5 + i * 0.4) * 0.09;
           vizTargets[i] = Math.max(0.05, Math.min(1, base + noise + 0.22));
         }
       }
-      for (let i = 0; i < VIZ_N; i++) {
+      for (let i = 0; i < VIZ_MAX; i++) {
         const spd = vizTargets[i] > vizBars[i] ? 0.40 : 0.08;
         vizBars[i] += (vizTargets[i] - vizBars[i]) * spd;
       }
@@ -334,8 +339,8 @@
 
   function stopViz() {
     if (vizFrame) { cancelAnimationFrame(vizFrame); vizFrame = null; }
-    vizBars    = Array(VIZ_N).fill(0);
-    vizTargets = Array(VIZ_N).fill(0);
+    vizBars    = Array(VIZ_MAX).fill(0);
+    vizTargets = Array(VIZ_MAX).fill(0);
     if (vizCanvas) vizCanvas.getContext("2d")?.clearRect(0, 0, vizCanvas.width, vizCanvas.height);
   }
 
@@ -344,6 +349,10 @@
     await tick();
 
     vizCanvas = document.querySelector('canvas') ?? document.querySelector('.viz-canvas');
+    if (vizCanvas) {
+      vizCanvas.width  = window.innerWidth;
+      vizCanvas.height = window.innerHeight;
+    }
     loadConfig();
     discordEnabled = await invoke("discord_get").catch(() => true);
     const initH = colorMode === "fixed" ? THEMES[fixedTheme].h : 280;
@@ -437,8 +446,10 @@
 
   function fmt(secs) {
     if (!secs || isNaN(secs)) return "0:00";
-    const m = Math.floor(secs / 60);
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
     const s = Math.floor(secs % 60).toString().padStart(2, "0");
+    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s}`;
     return `${m}:${s}`;
   }
 
@@ -523,6 +534,10 @@
     if (showConfig) return;
     const h = window.innerHeight - (showVolume ? VOL_H : 0);
     try { localStorage.setItem('ytune-popup-size', JSON.stringify({ w: window.innerWidth, h })); } catch {}
+    if (vizCanvas) {
+      vizCanvas.width  = window.innerWidth;
+      vizCanvas.height = window.innerHeight;
+    }
   }
 
   async function restorePopupSize() {
@@ -547,7 +562,7 @@
   {/if}
 
   <!-- Visualizer canvas (active when bgViz is cava/spectrum) -->
-  <canvas width="340" height="500" class="viz-canvas" class:viz-on={bgViz === "cava" || bgViz === "spectrum"}></canvas>
+  <canvas class="viz-canvas" class:viz-on={bgViz === "cava" || bgViz === "spectrum"}></canvas>
 
   <!-- ── Header ── -->
   <header data-tauri-drag-region onmousedown={onHeaderDrag}>
@@ -945,6 +960,27 @@
     transition: font-size 0.3s ease;
   }
 
+  /* Medium layout — left-hero: large thumb left, info right */
+  @media (min-height: 300px) and (max-height: 410px) {
+    .info {
+      flex-direction: row; align-items: center;
+      gap: 16px;
+    }
+    .thumb {
+      width: clamp(100px, 35vh, 160px);
+      height: clamp(100px, 35vh, 160px);
+      border-radius: clamp(8px, 2vh, 16px);
+      box-shadow: 0 6px 24px rgba(0,0,0,0.65);
+      flex-shrink: 0;
+    }
+    .info-text {
+      flex: 1; overflow: hidden;
+      display: flex; flex-direction: column; justify-content: center;
+    }
+    .title { font-size: clamp(14px, 2.6vh, 19px); }
+    .artist { font-size: clamp(11px, 1.8vh, 14px); }
+  }
+
   /* Hero layout — popup tall enough to show centered art */
   @media (min-height: 411px) {
     .info {
@@ -1059,7 +1095,7 @@
   .vol-pct { font-size: 10px; color: #636366; width: 28px; text-align: right; flex-shrink: 0; }
 
   /* Queue */
-  .queue { border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: none; }
+  .queue { border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: none; animation: panel-enter 160ms ease-out both; }
   .queue::-webkit-scrollbar { display: none; }
   .queue-label {
     font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -1111,6 +1147,7 @@
     gap: 18px;
     padding: 6px 0 4px;
     flex: 1;
+    animation: panel-enter 140ms ease-out both;
   }
   .cfg-section { display: flex; flex-direction: column; gap: 8px; }
   .cfg-label {
@@ -1150,5 +1187,9 @@
     box-shadow: 0 0 0 2px rgba(255,255,255,0.18);
   }
 
+  @keyframes panel-enter {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
 
 </style>
