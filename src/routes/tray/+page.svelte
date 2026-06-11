@@ -49,6 +49,7 @@
   let showLinkInput  = $state(false);
   let linkUrl        = $state('');
   let clipboardUrl   = $state('');
+  let clipboardPollInterval = null;
   let isSeeking      = $state(false);
   let seekValue      = $state(0);
   let isVolAdjusting = false;
@@ -450,6 +451,7 @@
   onDestroy(() => {
     window.removeEventListener('resize', savePopupSize);
     window.removeEventListener('focus', checkClipboard);
+    clearInterval(clipboardPollInterval);
     if (crossAnimFrame) cancelAnimationFrame(crossAnimFrame);
     if (cycleAnimFrame) cancelAnimationFrame(cycleAnimFrame);
     unlisten?.();
@@ -482,8 +484,21 @@
 
   function toggleLinkInput() {
     showLinkInput = !showLinkInput;
-    if (showLinkInput) { linkUrl = clipboardUrl; }
-    else { linkUrl = ''; }
+    if (showLinkInput) {
+      linkUrl = clipboardUrl;
+      clipboardPollInterval = setInterval(async () => {
+        const prev = clipboardUrl;
+        await checkClipboard();
+        // Auto-update field only if user hasn't typed something else
+        if (clipboardUrl !== prev && (linkUrl === prev || linkUrl === '')) {
+          linkUrl = clipboardUrl;
+        }
+      }, 1000);
+    } else {
+      linkUrl = '';
+      clearInterval(clipboardPollInterval);
+      clipboardPollInterval = null;
+    }
   }
 
   async function navigateUrl() {
