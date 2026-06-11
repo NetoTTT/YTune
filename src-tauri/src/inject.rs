@@ -569,7 +569,7 @@ pub const INJECT_JS: &str = r##"
         wrap.id = 'ytune-header-btns';
         wrap.style.cssText = 'display:flex;align-items:center;gap:4px;margin-right:4px';
 
-        // Notification bell
+        // Notification bell + dedicated notification panel
         const bellBtn = makeHBtn('ytune-notif-btn', 'ytune notifications');
         bellBtn.appendChild(makeSvg(
             'M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z'
@@ -582,7 +582,49 @@ pub const INJECT_JS: &str = r##"
             'background:#f44', 'border:1.5px solid #212121', 'display:none',
         ].join(';');
         bellBtn.appendChild(badge);
-        bellBtn.addEventListener('click', () => console.log('[ytune] notification bell clicked'));
+
+        // Notification panel — separate from the menu modal
+        const notifPanel = document.createElement('div');
+        notifPanel.id = 'ytune-notif-panel';
+        notifPanel.style.cssText = [
+            'position:fixed', 'z-index:9999',
+            'background:#1e1e1e', 'border:1px solid rgba(255,255,255,0.1)',
+            'border-radius:14px', 'padding:16px', 'width:260px',
+            'box-shadow:0 8px 32px rgba(0,0,0,0.6)',
+            'display:none', 'flex-direction:column', 'gap:10px',
+            'font-family:Roboto,sans-serif', 'color:#fff',
+        ].join(';');
+
+        const notifTitle = document.createElement('div');
+        notifTitle.style.cssText = 'font-size:14px;font-weight:600;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.08);letter-spacing:0.3px';
+        notifTitle.textContent = 'Notificações';
+
+        const notifEmpty = document.createElement('div');
+        notifEmpty.id = 'ytune-notif-empty';
+        notifEmpty.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.35);text-align:center;padding:12px 0';
+        notifEmpty.textContent = 'Nenhuma notificação';
+
+        notifPanel.appendChild(notifTitle);
+        notifPanel.appendChild(notifEmpty);
+        document.body.appendChild(notifPanel);
+
+        bellBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            modal.style.display = 'none';
+            const visible = notifPanel.style.display === 'flex';
+            notifPanel.style.display = visible ? 'none' : 'flex';
+            if (!visible) {
+                const r = bellBtn.getBoundingClientRect();
+                notifPanel.style.top   = (r.bottom + 8) + 'px';
+                notifPanel.style.right = (window.innerWidth - r.right) + 'px';
+                // Clear badge when panel is opened
+                badge.style.display = 'none';
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (!notifPanel.contains(e.target) && e.target !== bellBtn)
+                notifPanel.style.display = 'none';
+        });
 
         // Account circle
         const accountBtn = makeHBtn('ytune-account-btn', 'ytune account');
@@ -1132,12 +1174,74 @@ pub const INJECT_JS: &str = r##"
         console.log('[ytune] header buttons injected');
     }
 
-    // Expose so Rust/popup can later set notification count
     window.__ytune__.setNotifCount = function(n) {
         const badge = document.getElementById('ytune-notif-badge');
         if (!badge) return;
         badge.style.display = n > 0 ? 'block' : 'none';
-    }
+    };
+
+    window.__ytune__.showUpdateNotif = function(version) {
+        const panel = document.getElementById('ytune-notif-panel');
+        if (!panel) return;
+        // Avoid duplicate cards
+        if (document.getElementById('ytune-notif-update')) {
+            document.getElementById('ytune-notif-update-ver').textContent = version;
+            window.__ytune__.setNotifCount(1);
+            return;
+        }
+        const empty = document.getElementById('ytune-notif-empty');
+        if (empty) empty.style.display = 'none';
+
+        const card = document.createElement('div');
+        card.id = 'ytune-notif-update';
+        card.style.cssText = 'background:rgba(48,209,88,0.08);border:1px solid rgba(48,209,88,0.2);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px';
+
+        const cardTitle = document.createElement('div');
+        cardTitle.style.cssText = 'font-size:13px;font-weight:600;color:#30d158';
+        cardTitle.textContent = 'Atualização disponível';
+
+        const cardVer = document.createElement('div');
+        cardVer.id = 'ytune-notif-update-ver';
+        cardVer.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.5)';
+        cardVer.textContent = version;
+
+        const cardBtns = document.createElement('div');
+        cardBtns.style.cssText = 'display:flex;gap:8px';
+
+        const btnInstall = document.createElement('button');
+        btnInstall.textContent = 'Instalar';
+        btnInstall.style.cssText = 'flex:1;padding:6px 0;border-radius:8px;background:#30d158;color:#000;font-size:12px;font-weight:700;cursor:pointer;transition:opacity 0.15s';
+        btnInstall.addEventListener('mouseenter', () => btnInstall.style.opacity = '0.85');
+        btnInstall.addEventListener('mouseleave', () => btnInstall.style.opacity = '1');
+        btnInstall.addEventListener('click', () => {
+            btnInstall.textContent = 'Instalando…';
+            btnInstall.style.opacity = '0.5';
+            btnInstall.style.pointerEvents = 'none';
+            window.__TAURI_INTERNALS__?.invoke('plugin:event|emit', {
+                event: 'ytune-install-update', payload: {},
+            }).catch(() => {});
+        });
+
+        const btnDismiss = document.createElement('button');
+        btnDismiss.textContent = 'Dispensar';
+        btnDismiss.style.cssText = 'flex:1;padding:6px 0;border-radius:8px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.6);font-size:12px;cursor:pointer;transition:background 0.15s';
+        btnDismiss.addEventListener('mouseenter', () => btnDismiss.style.background = 'rgba(255,255,255,0.14)');
+        btnDismiss.addEventListener('mouseleave', () => btnDismiss.style.background = 'rgba(255,255,255,0.08)');
+        btnDismiss.addEventListener('click', () => {
+            card.remove();
+            if (!panel.querySelector('div[id^="ytune-notif-"]:not(#ytune-notif-empty)'))
+                if (empty) empty.style.display = 'block';
+            window.__ytune__.setNotifCount(0);
+        });
+
+        cardBtns.appendChild(btnInstall);
+        cardBtns.appendChild(btnDismiss);
+        card.appendChild(cardTitle);
+        card.appendChild(cardVer);
+        card.appendChild(cardBtns);
+        panel.appendChild(card);
+        window.__ytune__.setNotifCount(1);
+    };
 
     window.__ytune__.setVinylPlaying = function(playing) {
         const btn = document.getElementById('ytune-player-btn');

@@ -3,6 +3,10 @@
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, onDestroy, tick } from "svelte";
+  import { check } from "@tauri-apps/plugin-updater";
+  import { relaunch } from "@tauri-apps/plugin-process";
+  import { sendNotification } from "@tauri-apps/plugin-notification";
+  import { emit } from "@tauri-apps/api/event";
 
   const MAX_ITEMS = 13;
 
@@ -58,6 +62,9 @@
   let unlisten;
   let unlistenViz;
   let unlistenNav;
+  let updateAvailable   = $state(null); // { version, update } or null
+  let updateInstalling  = $state(false);
+  let unlistenInstall;
 
   // ── Visualizer canvas ─────────────────────────────────────────────
   let vizCanvas = null; // set in onMount via querySelector — bind:this unreliable in runes mode
@@ -369,7 +376,9 @@
     window.addEventListener('resize', savePopupSize);
     window.addEventListener('focus', checkClipboard);
     checkClipboard();
+    checkForUpdate();
     if (bgViz === "cava" || bgViz === "spectrum") startViz();
+    unlistenInstall = await listen("ytune-install-update", () => installUpdate());
     unlistenNav = await listen("ytune-navigating", () => {
       queue = [];
       showQueue = false;
@@ -456,6 +465,7 @@
     if (cycleAnimFrame) cancelAnimationFrame(cycleAnimFrame);
     unlisten?.();
     unlistenViz?.();
+    unlistenInstall?.();
     unlistenNav?.();
     stopViz();
     clearTimeout(seekTimeout);
@@ -474,6 +484,27 @@
   const control = (action) => invoke("player_control", { action });
   const openApp = () => { invoke("show_main_window"); invoke("hide_tray_popup"); };
   const close   = () => invoke("hide_tray_popup");
+
+  async function checkForUpdate() {
+    try {
+      const update = await check();
+      if (update?.available) {
+        updateAvailable = { version: update.version, update };
+        await emit('ytune-update-available', { version: update.version });
+        sendNotification({ title: 'ytune', body: `Atualização ${update.version} disponível — abra o ytune para instalar.` });
+      }
+    } catch {}
+  }
+
+  async function installUpdate() {
+    if (!updateAvailable || updateInstalling) return;
+    updateInstalling = true;
+    invoke('show_main_window');
+    try {
+      await updateAvailable.update.downloadAndInstall();
+      await relaunch();
+    } catch { updateInstalling = false; }
+  }
 
   async function checkClipboard() {
     try {
@@ -670,6 +701,16 @@
       </button>
     </div>
   </header>
+
+  <!-- ── Update banner ── -->
+  {#if updateAvailable}
+    <div class="update-banner">
+      <span>{updateInstalling ? 'Baixando atualização…' : `Atualização ${updateAvailable.version} disponível`}</span>
+      <button class="update-btn" onclick={installUpdate} disabled={updateInstalling}>
+        {updateInstalling ? '…' : 'Instalar'}
+      </button>
+    </div>
+  {/if}
 
   <!-- ── URL input panel ── -->
   {#if showLinkInput}
@@ -1020,6 +1061,19 @@
   .header-actions .close:hover { color: #ff453a; }
   .header-actions .active-link { color: var(--accent); }
   .header-actions .clip-ready  { color: var(--accent); opacity: 0.7; }
+
+  /* Update banner */
+  .update-banner {
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(48, 209, 88, 0.12); border-radius: 8px;
+    padding: 6px 10px; font-size: 11px; color: #30d158;
+    animation: panel-enter 80ms ease-out both;
+  }
+  .update-btn {
+    padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
+    background: #30d158; color: #000; transition: opacity 0.15s;
+  }
+  .update-btn:disabled { opacity: 0.5; pointer-events: none; }
 
   /* URL input bar */
   .link-bar {

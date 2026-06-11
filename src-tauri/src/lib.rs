@@ -88,6 +88,9 @@ fn apply_auth_token(app: &tauri::AppHandle, token: String) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Always show/focus the main window when a second instance is blocked
@@ -149,6 +152,23 @@ pub fn run() {
             let handle_popup = app.handle().clone();
             app.listen("ytune-toggle-popup", move |_| {
                 tray::toggle_tray_popup(&handle_popup);
+            });
+
+            // Update available: show badge+item in YTM modal and forward install-update to popup
+            let handle_upd = app.handle().clone();
+            app.listen("ytune-update-available", move |event| {
+                let version = serde_json::from_str::<serde_json::Value>(event.payload())
+                    .ok()
+                    .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                if let Some(main) = handle_upd.get_webview_window("main") {
+                    let safe = version.replace('\'', "\\'");
+                    let _ = main.eval(&format!("window.__ytune__?.showUpdateNotif?.('{safe}')"));
+                }
+            });
+            let handle_install = app.handle().clone();
+            app.listen("ytune-install-update", move |_| {
+                let _ = handle_install.emit("ytune-install-update", ());
             });
 
             let handle_state_req = app.handle().clone();

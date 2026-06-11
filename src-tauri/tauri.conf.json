@@ -16,6 +16,12 @@
     }
   },
   "plugins": {
+    "updater": {
+      "pubkey": "RWT5miEuQqmnp2qphWhXcLaAtgD772Dh9RzXHxMcLnKVDQ8eQ1PKRMiz",
+      "endpoints": [
+        "https://github.com/NetoTTT/YTune/releases/latest/download/latest.json"
+      ]
+    },
     "deep-link": {
       "desktop": {
         "schemes": ["ytune"]
