@@ -2,6 +2,22 @@ pub const INJECT_JS: &str = r##"
 (function() {
     // initialization_script runs in every frame — skip anything that isn't the main YTM page
     if (location.hostname !== 'music.youtube.com') return;
+
+    // Block beforeunload dialogs — YTM registers them to warn on navigation,
+    // but ytune navigates programmatically and the dialog is always unwanted.
+    // This runs before YTM's scripts so no listener ever gets registered.
+    if (!window.__ytune_beforeunload_blocked) {
+        window.__ytune_beforeunload_blocked = true;
+        const _ael = EventTarget.prototype.addEventListener;
+        EventTarget.prototype.addEventListener = function(type, listener, options) {
+            if (type === 'beforeunload') return;
+            return _ael.call(this, type, listener, options);
+        };
+        Object.defineProperty(window, 'onbeforeunload', {
+            get() { return null; }, set(_) {}, configurable: true,
+        });
+    }
+
     if (window.__ytune_injected) return;
     window.__ytune_injected = true;
 
@@ -273,9 +289,10 @@ pub const INJECT_JS: &str = r##"
             if (artwork && artwork.length > 0) {
                 const src = artwork[artwork.length - 1]?.src || artwork[0]?.src;
                 if (src) {
-                    // ytimg URLs carry signed params (sqp/rs) — keep them as-is
+                    // ytimg signed params (sqp/rs) require YouTube cookies — strip them
+                    // so the base hqdefault.jpg URL loads in any context (popup, Discord etc)
                     // Google CDN URLs use path-based sizing — clean and upgrade those
-                    if (src.includes('i.ytimg.com')) return src;
+                    if (src.includes('i.ytimg.com')) return cleanThumbUrl(src);
                     return upgradeThumbUrl(cleanThumbUrl(src));
                 }
             }

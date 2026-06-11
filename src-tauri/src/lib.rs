@@ -28,6 +28,46 @@ fn parse_auth_token(url_str: &str) -> Option<String> {
         )
 }
 
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(hex) = std::str::from_utf8(&b[i+1..i+3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        } else if b[i] == b'+' {
+            out.push(' ');
+        } else {
+            out.push(b[i] as char);
+        }
+        i += 1;
+    }
+    out
+}
+
+fn parse_navigate_url(url_str: &str) -> Option<String> {
+    if !url_str.starts_with("ytune://open") { return None; }
+    let query = url_str.split_once('?').map(|(_, q)| q)?;
+    let target = query.split('&')
+        .find(|p| p.starts_with("url="))
+        .map(|p| percent_decode(p.trim_start_matches("url=")))?;
+    if target.contains("music.youtube.com") { Some(target) } else { None }
+}
+
+fn apply_navigate_url(app: &tauri::AppHandle, url: String) {
+    if let Some(main) = app.get_webview_window("main") {
+        if let Ok(parsed) = tauri::Url::parse(&url) {
+            let _ = main.navigate(parsed);
+        }
+    }
+}
+
 fn apply_auth_token(app: &tauri::AppHandle, token: String) {
     if let Some(state) = app.try_state::<AuthTokenState>() {
         *state.0.lock().unwrap() = Some(token.clone());
@@ -61,6 +101,10 @@ pub fn run() {
                     apply_auth_token(app, token);
                     break;
                 }
+                if let Some(url) = parse_navigate_url(arg) {
+                    apply_navigate_url(app, url);
+                    break;
+                }
             }
         }))
         .manage(DiscordState(Mutex::new(None)))
@@ -76,8 +120,13 @@ pub fn run() {
             let handle_auth = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
-                    if let Some(token) = parse_auth_token(&url.to_string()) {
+                    let s = url.to_string();
+                    if let Some(token) = parse_auth_token(&s) {
                         apply_auth_token(&handle_auth, token);
+                        break;
+                    }
+                    if let Some(nav) = parse_navigate_url(&s) {
+                        apply_navigate_url(&handle_auth, nav);
                         break;
                     }
                 }
@@ -219,6 +268,8 @@ pub fn run() {
             commands::discord_set,
             commands::get_auth_token,
             commands::set_popup_size,
+            commands::navigate_ytm,
+            commands::read_clipboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

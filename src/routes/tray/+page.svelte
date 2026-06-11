@@ -46,6 +46,9 @@
   // let crossfade       = $state(0);      // crossfade disabled
   let cycleAnimFrame  = null;
   let crossAnimFrame  = null;
+  let showLinkInput  = $state(false);
+  let linkUrl        = $state('');
+  let clipboardUrl   = $state('');
   let isSeeking      = $state(false);
   let seekValue      = $state(0);
   let isVolAdjusting = false;
@@ -362,6 +365,7 @@
     // invoke("set_crossfade", { duration: crossfade }); // crossfade disabled
     await restorePopupSize();
     window.addEventListener('resize', savePopupSize);
+    checkClipboard();
     if (bgViz === "cava" || bgViz === "spectrum") startViz();
     unlistenViz = await listen("player-viz", (e) => {
       try {
@@ -456,6 +460,34 @@
   const control = (action) => invoke("player_control", { action });
   const openApp = () => { invoke("show_main_window"); invoke("hide_tray_popup"); };
   const close   = () => invoke("hide_tray_popup");
+
+  async function checkClipboard() {
+    try {
+      const text = (await invoke('read_clipboard')).trim();
+      clipboardUrl = text.includes('music.youtube.com') ? text : '';
+    } catch { clipboardUrl = ''; }
+  }
+
+  function toggleLinkInput() {
+    showLinkInput = !showLinkInput;
+    if (showLinkInput) { linkUrl = clipboardUrl; }
+    else { linkUrl = ''; }
+  }
+
+  async function navigateUrl() {
+    const url = linkUrl.trim();
+    if (!url.includes('music.youtube.com')) return;
+    try {
+      await invoke('navigate_ytm', { url });
+      showLinkInput = false;
+      linkUrl = '';
+    } catch {}
+  }
+
+  function onLinkKeydown(e) {
+    if (e.key === 'Enter') navigateUrl();
+    if (e.key === 'Escape') { showLinkInput = false; linkUrl = ''; }
+  }
 
   function onHeaderDrag(e) {
     if (e.target.closest('button')) return;
@@ -567,6 +599,14 @@
   <header data-tauri-drag-region onmousedown={onHeaderDrag}>
     <span class="brand">ytune</span>
     <div class="header-actions">
+      {#if !showConfig}
+        <button onclick={toggleLinkInput} class:active-link={showLinkInput} class:clip-ready={clipboardUrl && !showLinkInput} aria-label="Open URL" title="Open YouTube Music link">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
+          </svg>
+        </button>
+      {/if}
       {#if showConfig}
         <!-- Back arrow replaces the gear when in config mode -->
         <button onclick={closeConfig} aria-label="Back" title="Back">
@@ -595,6 +635,25 @@
       </button>
     </div>
   </header>
+
+  <!-- ── URL input panel ── -->
+  {#if showLinkInput}
+    <div class="link-bar">
+      <input
+        class="link-input"
+        type="url"
+        placeholder="Colar link do YouTube Music..."
+        bind:value={linkUrl}
+        onkeydown={onLinkKeydown}
+        autofocus
+      />
+      <button class="link-go" onclick={navigateUrl} disabled={!linkUrl.includes('music.youtube.com')} aria-label="Open">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+        </svg>
+      </button>
+    </div>
+  {/if}
 
   <!-- ── Config panel (replaces all other content) ── -->
   {#if showConfig}
@@ -924,6 +983,27 @@
   }
   .header-actions button:hover { color: #f5f5f7; }
   .header-actions .close:hover { color: #ff453a; }
+  .header-actions .active-link { color: var(--accent); }
+  .header-actions .clip-ready  { color: var(--accent); opacity: 0.7; }
+
+  /* URL input bar */
+  .link-bar {
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 8px; padding: 4px 6px 4px 10px;
+    animation: panel-enter 80ms ease-out both;
+  }
+  .link-input {
+    flex: 1; background: none; border: none; outline: none;
+    color: #f5f5f7; font-size: 11px; font-family: inherit;
+    padding: 0;
+  }
+  .link-input::placeholder { color: #636366; }
+  .link-go {
+    flex-shrink: 0; padding: 4px 6px; border-radius: 6px;
+    color: var(--accent); transition: background 0.15s, opacity 0.15s;
+  }
+  .link-go:disabled { opacity: 0.25; pointer-events: none; }
 
   /* Song info — fluid layout */
   .info {

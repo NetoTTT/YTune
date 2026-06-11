@@ -157,3 +157,23 @@ pub fn get_auth_token<R: Runtime>(app: tauri::AppHandle<R>) -> Option<String> {
     app.try_state::<crate::AuthTokenState>()
         .and_then(|s| s.0.lock().ok()?.clone().into())
 }
+
+#[tauri::command]
+pub fn read_clipboard() -> String {
+    arboard::Clipboard::new().ok()
+        .and_then(|mut c| c.get_text().ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn navigate_ytm<R: Runtime>(app: tauri::AppHandle<R>, url: String) -> Result<(), String> {
+    let url = url.trim().to_string();
+    if !url.contains("music.youtube.com") {
+        return Err("Not a YouTube Music URL".into());
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+        let _ = main.navigate(parsed);
+    }
+    Ok(())
+}
