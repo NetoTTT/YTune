@@ -63,6 +63,7 @@ fn parse_navigate_url(url_str: &str) -> Option<String> {
 fn apply_navigate_url(app: &tauri::AppHandle, url: String) {
     if let Some(main) = app.get_webview_window("main") {
         if let Ok(parsed) = tauri::Url::parse(&url) {
+            let _ = app.emit("ytune-navigating", ());
             let _ = main.navigate(parsed);
         }
     }

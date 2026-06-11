@@ -103,7 +103,7 @@ pub const INJECT_JS: &str = r##"
     // and the failure poisons the browser cache, breaking even plain <img> display.
     // One fetch produces both: a data URI for display and the dominant palette color.
     let _palette   = { url: '', h: [280, 280, 280], s: [65, 65, 65] };
-    let _thumbData = { url: '', data: '' };
+    let _thumbData = { url: '', data: '', display: '' };
 
     function ytimgFallbacks(src) {
         const m = src.match(/^(https:\/\/i\.ytimg\.com\/vi\/[^/]+\/)(maxresdefault|sddefault|hqdefault)(\.jpg)/);
@@ -116,7 +116,7 @@ pub const INJECT_JS: &str = r##"
     function processImage(url) {
         if (!url || url === _palette.url) return;
         _palette.url = url;    // mark as in-progress to avoid duplicate calls
-        _thumbData   = { url: '', data: '' }; // clear stale data from previous song
+        _thumbData   = { url: '', data: '', display: '' }; // clear stale data from previous song
 
         function loadAndExtract(src) {
             fetch(src)
@@ -125,16 +125,23 @@ pub const INJECT_JS: &str = r##"
                     const blobUrl = URL.createObjectURL(blob);
                     const img = new Image();
                     img.onload = function() {
+                        const s = Math.min(img.naturalWidth, img.naturalHeight);
+                        const sx = (img.naturalWidth - s) / 2;
+                        const sy = (img.naturalHeight - s) / 2;
+                        // 300×300 data URI used as img src in popup (avoids 429 from localhost)
+                        const DISP = 300;
+                        const cd = document.createElement('canvas');
+                        cd.width = cd.height = DISP;
+                        cd.getContext('2d').drawImage(img, sx, sy, s, s, 0, 0, DISP, DISP);
+                        const displayDataUri = cd.toDataURL('image/jpeg', 0.92);
+                        // 60×60 canvas for palette extraction
                         const SIZE = 60;
                         const c = document.createElement('canvas');
                         c.width = c.height = SIZE;
                         const ctx = c.getContext('2d');
-                        const s = Math.min(img.naturalWidth, img.naturalHeight);
-                        const sx = (img.naturalWidth - s) / 2;
-                        const sy = (img.naturalHeight - s) / 2;
                         ctx.drawImage(img, sx, sy, s, s, 0, 0, SIZE, SIZE);
                         URL.revokeObjectURL(blobUrl);
-                        _thumbData = { url: src, data: c.toDataURL('image/jpeg', 0.85) };
+                        _thumbData = { url: src, data: c.toDataURL('image/jpeg', 0.85), display: displayDataUri };
                         const { data } = ctx.getImageData(0, 0, SIZE, SIZE);
                         const bkts = Array.from({length:12}, () => ({n:0,h:0,s:0}));
                         for (let i = 0; i < data.length; i += 4) {
@@ -180,7 +187,9 @@ pub const INJECT_JS: &str = r##"
     }
 
     function getQueue() {
-        // Scope to the queue panel to avoid picking up items rendered in other DOM contexts
+        // Scope to the queue panel — only rendered in DOM when the panel has been opened.
+        // Global fallback was removed: it picks up items from unrelated DOM contexts
+        // (suggestions, shelves) producing wrong track lists and broken current detection.
         const container = document.querySelector('ytmusic-player-queue #contents')
                        || document.querySelector('ytmusic-player-queue');
         if (!container) return [];
@@ -342,7 +351,7 @@ pub const INJECT_JS: &str = r##"
             queue:       getQueue(),
             paletteH:      _palette.h,
             paletteS:      _palette.s,
-            thumbnailData: _palette.url === thumb ? _thumbData.data : '',
+            thumbnailData: _palette.url === thumb ? (_thumbData.display || _thumbData.data) : '',
         };
     }
 

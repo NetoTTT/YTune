@@ -173,6 +173,7 @@ pub fn navigate_ytm<R: Runtime>(app: tauri::AppHandle<R>, url: String) -> Result
     }
     if let Some(main) = app.get_webview_window("main") {
         let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+        let _ = app.emit("ytune-navigating", ());
         let _ = main.navigate(parsed);
     }
     Ok(())

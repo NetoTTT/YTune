@@ -56,6 +56,7 @@
   let volTimeout;
   let unlisten;
   let unlistenViz;
+  let unlistenNav;
 
   // ── Visualizer canvas ─────────────────────────────────────────────
   let vizCanvas = null; // set in onMount via querySelector — bind:this unreliable in runes mode
@@ -367,6 +368,14 @@
     window.addEventListener('resize', savePopupSize);
     checkClipboard();
     if (bgViz === "cava" || bgViz === "spectrum") startViz();
+    unlistenNav = await listen("ytune-navigating", () => {
+      queue = [];
+      showQueue = false;
+      title = '';
+      artist = '';
+      thumbnail = '';
+      thumbnailData = '';
+    });
     unlistenViz = await listen("player-viz", (e) => {
       try {
         const arr = typeof e.payload === 'string' ? JSON.parse(e.payload) : e.payload;
@@ -443,6 +452,7 @@
     if (cycleAnimFrame) cancelAnimationFrame(cycleAnimFrame);
     unlisten?.();
     unlistenViz?.();
+    unlistenNav?.();
     stopViz();
     clearTimeout(seekTimeout);
     clearTimeout(volTimeout);
@@ -481,6 +491,13 @@
       await invoke('navigate_ytm', { url });
       showLinkInput = false;
       linkUrl = '';
+      // Clear stale state immediately — inject will repopulate once new page loads
+      queue = [];
+      showQueue = false;
+      title = '';
+      artist = '';
+      thumbnail = '';
+      thumbnailData = '';
     } catch {}
   }
 
@@ -753,7 +770,7 @@
   <!-- ── Song info ── -->
   <section class="info">
     {#if thumbnailData || thumbnail}
-      <img class="thumb" src={thumbnail || thumbnailData} alt="" draggable="false" />
+      <img class="thumb" src={thumbnailData || thumbnail} alt="" draggable="false" />
     {:else}
       <div class="thumb thumb-placeholder">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" opacity="0.3">
