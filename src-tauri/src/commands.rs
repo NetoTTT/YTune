@@ -63,6 +63,19 @@ pub fn player_control<R: Runtime>(app: tauri::AppHandle<R>, action: String) {
 }
 
 #[tauri::command]
+pub fn set_popup_size<R: Runtime>(app: tauri::AppHandle<R>, width: f64, height: f64) {
+    let Some(popup) = app.get_webview_window("tray-popup") else { return };
+    let Ok(pos)     = popup.outer_position()               else { return };
+    let Ok(Some(m)) = popup.current_monitor()              else { return };
+    let scale = m.scale_factor();
+    let _ = popup.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+        width:  (width  * scale).round() as u32,
+        height: (height * scale).round() as u32,
+    }));
+    let _ = popup.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x: pos.x, y: pos.y }));
+}
+
+#[tauri::command]
 pub fn resize_popup<R: Runtime>(app: tauri::AppHandle<R>, height: f64) {
     let Some(popup) = app.get_webview_window("tray-popup") else { return };
     let Ok(cur_size) = popup.inner_size() else { return };
@@ -75,7 +88,7 @@ pub fn resize_popup<R: Runtime>(app: tauri::AppHandle<R>, height: f64) {
 
     let scale    = monitor.scale_factor();
     let margin   = (8.0 * scale) as i32;
-    let w_phys   = (340.0 * scale).round() as i32;
+    let w_phys   = cur_size.width as i32;
     let start_h  = cur_size.height as i32;
     let target_h = (height * scale).round() as i32;
     let bottom   = pos.y + start_h;

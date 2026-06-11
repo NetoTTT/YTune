@@ -185,22 +185,20 @@
     } catch {}
   }
 
-  // Heights for config panel resize
-  const CFG_BASE   = 118; // header + padding + color-mode section
-  const CFG_PRESET = 80;  // preset theme grid (only when colorMode=fixed)
-  const CFG_BG     = 76;  // background section
-  const CFG_VIZ    = 76;  // bar color section (only when bgMode=cava|spectrum)
-
-  const CFG_VIZ_OPT   = 76; // visualizer row (always shown in config)
-  const CFG_SMOOTH    = 76; // smooth transitions toggle (only when colorMode=dynamic)
-  const CFG_CROSSFADE = 76; // discord presence row
+  // Heights for config panel resize (absolute — config replaces all content)
+  const CFG_BASE      = 118;
+  const CFG_PRESET    = 80;
+  const CFG_BG        = 76;
+  const CFG_VIZ       = 76;
+  const CFG_VIZ_OPT   = 76;
+  const CFG_SMOOTH    = 76;
+  const CFG_CROSSFADE = 76;
 
   function syncConfigSize() {
-    if (!showConfig) { syncSize(); return; }
     let h = CFG_BASE + CFG_BG + CFG_VIZ_OPT + CFG_CROSSFADE;
-    if (colorMode === "fixed")                           h += CFG_PRESET;
-    if (colorMode === "dynamic")                         h += CFG_SMOOTH;
-    if (bgViz === "cava" || bgViz === "spectrum")        h += CFG_VIZ;
+    if (colorMode === "fixed")                    h += CFG_PRESET;
+    if (colorMode === "dynamic")                  h += CFG_SMOOTH;
+    if (bgViz === "cava" || bgViz === "spectrum") h += CFG_VIZ;
     invoke("resize_popup", { height: h });
   }
 
@@ -246,13 +244,23 @@
     saveConfig();
   }
 
+  let preConfigH = 225;
+  let preConfigW = 330;
+
   function openConfig() {
-    showConfig = true;
+    preConfigH = window.innerHeight
+      - (showVolume ? VOL_H : 0)
+      - (showQueue  ? QUEUE_H : 0);
+    preConfigW = window.innerWidth;
     showVolume = false;
     showQueue  = false;
+    showConfig = true;
     syncConfigSize();
   }
-  function closeConfig() { showConfig = false; syncSize(); }
+  function closeConfig() {
+    showConfig = false;
+    invoke("set_popup_size", { width: preConfigW, height: preConfigH });
+  }
 
   // ── Visualizer ────────────────────────────────────────────────────
   function vizColor(alpha = 1) {
@@ -343,6 +351,8 @@
     currentPalette = { h: initH, s: initS };
     applyPalette(initH, initS);
     // invoke("set_crossfade", { duration: crossfade }); // crossfade disabled
+    await restorePopupSize();
+    window.addEventListener('resize', savePopupSize);
     if (bgViz === "cava" || bgViz === "spectrum") startViz();
     unlistenViz = await listen("player-viz", (e) => {
       try {
@@ -415,6 +425,7 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener('resize', savePopupSize);
     if (crossAnimFrame) cancelAnimationFrame(crossAnimFrame);
     if (cycleAnimFrame) cancelAnimationFrame(cycleAnimFrame);
     unlisten?.();
@@ -457,21 +468,71 @@
     invoke("player_volume", { volume });
   }
 
+  function scrollOnHover(node) {
+    function start() {
+      const overflow = node.offsetWidth - wrap.clientWidth;
+      if (overflow <= 2) return;
+      node.style.setProperty('--marquee-d', `-${overflow + 8}px`);
+      node.classList.add('scrolling');
+    }
+    function stop() {
+      node.classList.remove('scrolling');
+    }
+    const wrap = node.parentElement;
+    wrap.addEventListener('mouseenter', start);
+    wrap.addEventListener('mouseleave', stop);
+    return { destroy() { wrap.removeEventListener('mouseenter', start); wrap.removeEventListener('mouseleave', stop); } };
+  }
+
   function toggleMute() {
     if (volume > 0) { prevVolume = volume; volume = 0; }
     else             { volume = prevVolume || 100; }
     invoke("player_volume", { volume });
   }
 
-  const BASE_H  = 205;
-  const VOL_H   = 24;
-  const QUEUE_H = 210;
+  const VOL_H     = 24;
+  const QUEUE_H   = 210;
+  const DEFAULT_W = 330;
+  const DEFAULT_H = 225;
 
-  function syncSize() {
-    invoke("resize_popup", { height: BASE_H + (showVolume ? VOL_H : 0) + (showQueue ? QUEUE_H : 0) });
+  function toggleVolume() {
+    showVolume = !showVolume;
+    invoke("resize_popup", { height: window.innerHeight + (showVolume ? VOL_H : -VOL_H) });
   }
-  function toggleVolume() { showVolume = !showVolume; syncSize(); }
-  function toggleQueue()  { showQueue  = !showQueue;  syncSize(); }
+  let preQueueH = 0;
+
+  async function toggleQueue() {
+    if (showQueue) {
+      showQueue = false;
+      invoke("resize_popup", { height: preQueueH });
+    } else {
+      preQueueH = window.innerHeight;
+      showQueue = true;
+      await tick();
+      const qEl = document.querySelector('section.queue');
+      if (qEl) {
+        const overflow = qEl.scrollHeight - qEl.clientHeight;
+        if (overflow > 0) {
+          invoke("resize_popup", { height: window.innerHeight + overflow + 4 });
+        }
+      }
+    }
+  }
+
+  function savePopupSize() {
+    if (showConfig) return;
+    const h = window.innerHeight - (showVolume ? VOL_H : 0);
+    try { localStorage.setItem('ytune-popup-size', JSON.stringify({ w: window.innerWidth, h })); } catch {}
+  }
+
+  async function restorePopupSize() {
+    let w = DEFAULT_W, h = DEFAULT_H;
+    try {
+      const raw = localStorage.getItem('ytune-popup-size');
+      if (raw) { const s = JSON.parse(raw); w = s.w || DEFAULT_W; h = s.h || DEFAULT_H; }
+    } catch {}
+    await invoke('set_popup_size', { width: w, height: h + (showVolume ? VOL_H : 0) });
+  }
 
   const progressPct = $derived(
     duration > 0 ? ((isSeeking ? seekValue : currentTime) / duration) * 100 : 0
@@ -619,7 +680,7 @@
   <!-- ── Song info ── -->
   <section class="info">
     {#if thumbnailData || thumbnail}
-      <img class="thumb" src={thumbnailData || thumbnail} alt="" draggable="false" />
+      <img class="thumb" src={thumbnail || thumbnailData} alt="" draggable="false" />
     {:else}
       <div class="thumb thumb-placeholder">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" opacity="0.3">
@@ -628,8 +689,8 @@
       </div>
     {/if}
     <div class="info-text">
-      <p class="title" title={title}>{title}</p>
-      <p class="artist" title={artist}>{artist}</p>
+      <div class="scroll-clip"><span class="title" use:scrollOnHover>{title}</span></div>
+      <div class="scroll-clip"><span class="artist" use:scrollOnHover>{artist}</span></div>
     </div>
   </section>
 
@@ -654,7 +715,7 @@
     </div>
   </section>
 
-  <!-- ── Controls ── -->
+  <!-- ── Transport controls ── -->
   <section class="controls">
     <button class="icon-btn" class:active={shuffled} onclick={() => control("shuffle")} aria-label="Shuffle" title="Shuffle">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -686,53 +747,54 @@
       </svg>
     </button>
 
-    <div class="secondary-controls">
-      <button class="icon-btn repeat-btn" class:active={repeatMode !== 'none'} onclick={() => control("repeat")} aria-label="Repeat" title="Repeat">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-          {#if repeatMode === 'one'}
-            <path d="M17.293 1.293a1 1 0 000 1.415L18.586 4H7a5 5 0 00-5 5v4a1 1 0 102 0V9a3 3 0 013-3h11.586l-1.293 1.293a1 1 0 001.414 1.415L22.414 5l-3.707-3.707a1 1 0 00-1.414 0ZM21 10a1 1 0 00-1 1v4a3 3 0 01-3 3H5.414l1.293-1.292a1.001 1.001 0 00-1.414-1.415L1.586 19l3.707 3.707a1 1 0 101.414-1.413L5.414 20H17a5 5 0 005-5v-4a1 1 0 00-1-1Z"/>
-          {:else}
-            <path d="M17.293 1.293a1 1 0 000 1.415L18.586 4H7a5 5 0 00-5 5v4a1 1 0 102 0V9a3 3 0 013-3h11.586l-1.293 1.293a1 1 0 001.414 1.415L22.414 5l-3.707-3.707a1 1 0 00-1.414 0ZM21 10a1 1 0 00-1 1v4a3 3 0 01-3 3H5.414l1.293-1.292a1.001 1.001 0 00-1.414-1.415L1.586 19l3.707 3.707a1 1 0 101.414-1.413L5.414 20H17a5 5 0 005-5v-4a1 1 0 00-1-1Z"/>
-          {/if}
-        </svg>
-        {#if repeatMode === 'one'}
-          <span class="repeat-one">1</span>
-        {/if}
-      </button>
-      <button class="icon-btn" class:active={liked}    onclick={() => control("like")}    aria-label="Like"    title="Like">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/>
-        </svg>
-      </button>
-      <button class="icon-btn" class:active={disliked} onclick={() => control("dislike")} aria-label="Dislike" title="Dislike">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/>
-        </svg>
-      </button>
-      <button class="icon-btn" class:active={showVolume} onclick={toggleVolume} aria-label="Volume" title="Volume">
-        {#if volume === 0}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
-          </svg>
-        {:else if volume < 50}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/>
-          </svg>
-        {:else}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-          </svg>
-        {/if}
-      </button>
-      {#if queue.length > 1}
-        <button class="icon-btn queue-toggle" class:active={showQueue} onclick={toggleQueue} aria-label="Queue" title="Queue">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h12v2H3z"/>
-          </svg>
-          <span class="queue-count">{queue.length}</span>
-        </button>
+    <button class="icon-btn repeat-btn" class:active={repeatMode !== 'none'} onclick={() => control("repeat")} aria-label="Repeat" title="Repeat">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M17.293 1.293a1 1 0 000 1.415L18.586 4H7a5 5 0 00-5 5v4a1 1 0 102 0V9a3 3 0 013-3h11.586l-1.293 1.293a1 1 0 001.414 1.415L22.414 5l-3.707-3.707a1 1 0 00-1.414 0ZM21 10a1 1 0 00-1 1v4a3 3 0 01-3 3H5.414l1.293-1.292a1.001 1.001 0 00-1.414-1.415L1.586 19l3.707 3.707a1 1 0 101.414-1.413L5.414 20H17a5 5 0 005-5v-4a1 1 0 00-1-1Z"/>
+      </svg>
+      {#if repeatMode === 'one'}
+        <span class="repeat-one">1</span>
       {/if}
-    </div>
+    </button>
+  </section>
+
+  <!-- ── Action controls ── -->
+  <section class="actions">
+    <button class="icon-btn" class:active={liked}    onclick={() => control("like")}    aria-label="Like"    title="Like">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/>
+      </svg>
+    </button>
+    <button class="icon-btn" class:active={disliked} onclick={() => control("dislike")} aria-label="Dislike" title="Dislike">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z"/>
+      </svg>
+    </button>
+
+    <div class="actions-spacer"></div>
+
+    <button class="icon-btn" class:active={showVolume} onclick={toggleVolume} aria-label="Volume" title="Volume">
+      {#if volume === 0}
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>
+        </svg>
+      {:else if volume < 50}
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/>
+        </svg>
+      {:else}
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+        </svg>
+      {/if}
+    </button>
+    {#if queue.length > 1}
+      <button class="icon-btn queue-toggle" class:active={showQueue} onclick={toggleQueue} aria-label="Queue" title="Queue">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h12v2H3z"/>
+        </svg>
+        <span class="queue-count">{queue.length}</span>
+      </button>
+    {/if}
   </section>
 
   <!-- ── Volume (expandable) ── -->
@@ -802,8 +864,7 @@
   main {
     position: relative;
     z-index: 0;
-    width: 100%;
-    min-height: 100%;
+    width: 100%; height: 100vh;
     background: #1c1c1e;
     color: #f5f5f7;
     border-radius: 14px;
@@ -850,12 +911,19 @@
   .header-actions button:hover { color: #f5f5f7; }
   .header-actions .close:hover { color: #ff453a; }
 
-  /* Song info */
-  .info { display: flex; align-items: center; gap: 10px; overflow: hidden; }
+  /* Song info — fluid layout */
+  .info {
+    display: flex; align-items: center; gap: 10px; overflow: hidden;
+    flex: 1; min-height: 0;
+    transition: flex-direction 0.3s;
+  }
   .thumb {
-    width: 52px; height: 52px; border-radius: 7px;
+    width: clamp(48px, 20vh, 120px);
+    height: clamp(48px, 20vh, 120px);
+    border-radius: clamp(7px, 2vh, 18px);
     object-fit: cover; flex-shrink: 0;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+    box-shadow: 0 clamp(2px, 1vh, 8px) clamp(8px, 4vh, 24px) rgba(0,0,0,0.6);
+    transition: width 0.4s ease, height 0.4s ease, border-radius 0.4s ease, box-shadow 0.4s ease;
   }
   .thumb-placeholder {
     background: rgba(255,255,255,0.06);
@@ -863,14 +931,45 @@
     color: #f5f5f7;
   }
   .info-text { flex: 1; overflow: hidden; }
+  .scroll-clip { overflow: hidden; }
   .title {
-    font-size: 13px; font-weight: 600;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    line-height: 1.3;
+    display: inline-block;
+    font-size: clamp(13px, 2.2vh, 20px); font-weight: 600;
+    white-space: nowrap; line-height: 1.3;
+    transition: font-size 0.3s ease;
   }
   .artist {
-    font-size: 11px; color: #8e8e93; margin-top: 2px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: inline-block;
+    font-size: clamp(11px, 1.7vh, 15px); color: #8e8e93; margin-top: 2px;
+    white-space: nowrap;
+    transition: font-size 0.3s ease;
+  }
+
+  /* Hero layout — popup tall enough to show centered art */
+  @media (min-height: 411px) {
+    .info {
+      flex: 1; min-height: 0;
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px; text-align: center;
+    }
+    .thumb {
+      width: clamp(80px, 42vh, 340px);
+      height: clamp(80px, 42vh, 340px);
+      border-radius: clamp(8px, 2vh, 18px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.7);
+    }
+    .info-text { text-align: center; width: 100%; }
+    .scroll-clip { text-align: center; }
+    .title { font-size: clamp(14px, 2.8vh, 24px); }
+    .artist { font-size: clamp(11px, 1.8vh, 16px); }
+  }
+  .title.scrolling, .artist.scrolling {
+    animation: marquee-scroll 3.5s ease-in-out infinite;
+  }
+  @keyframes marquee-scroll {
+    0%,  12% { transform: translateX(0); }
+    45%, 55% { transform: translateX(var(--marquee-d)); }
+    88%, 100% { transform: translateX(0); }
   }
 
   /* Progress */
@@ -904,7 +1003,6 @@
   .times { display: flex; justify-content: space-between; font-size: 10px; color: #636366; }
 
   /* Controls */
-  .controls { display: flex; align-items: center; gap: 6px; }
   button {
     background: none; border: none; cursor: pointer;
     color: #f5f5f7; padding: 7px; border-radius: 8px;
@@ -914,14 +1012,22 @@
   button:hover  { background: rgba(255,255,255,0.09); }
   button:active { background: rgba(255,255,255,0.05); }
 
+  /* Transport row: shuffle | prev | play | next | repeat */
+  .controls {
+    display: flex; align-items: center; justify-content: center; gap: 2px;
+  }
+
   .play {
     background: var(--accent-dim);
-    padding: 9px; margin: 0 3px; border-radius: 50%;
+    padding: 9px; margin: 0 6px; border-radius: 50%;
     transition: background 0.6s ease;
   }
   .play:hover { background: hsla(var(--h), var(--s), 45%, 0.38); }
 
-  .secondary-controls { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  /* Action row: like | dislike — spacer — volume | queue */
+  .actions { display: flex; align-items: center; gap: 2px; }
+  .actions-spacer { flex: 1; }
+
   .icon-btn { color: rgba(255,255,255,0.45); padding: 6px; }
   .icon-btn:hover { color: rgba(255,255,255,0.75); background: rgba(255,255,255,0.07); }
   .icon-btn.active {
@@ -953,7 +1059,8 @@
   .vol-pct { font-size: 10px; color: #636366; width: 28px; text-align: right; flex-shrink: 0; }
 
   /* Queue */
-  .queue { border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; }
+  .queue { border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: none; }
+  .queue::-webkit-scrollbar { display: none; }
   .queue-label {
     font-size: 10px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.08em; color: #636366; margin-bottom: 5px;

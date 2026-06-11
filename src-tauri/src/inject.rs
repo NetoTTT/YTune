@@ -282,7 +282,7 @@ pub const INJECT_JS: &str = r##"
                       || '',
             artist:      document.querySelector('.subtitle.ytmusic-player-bar')?.textContent?.trim()
                       || '',
-            thumbnail:   _thumbData.url || '', // empty until fetch confirms a working URL
+            thumbnail:   thumb || _thumbData.url || '',
             liked:       document.querySelector('#like-button-renderer')
                            ?.getAttribute('like-status') === 'LIKE',
             disliked:    document.querySelector('#like-button-renderer')

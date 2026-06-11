@@ -79,19 +79,21 @@ pub fn toggle_tray_popup<R: Runtime>(app: &tauri::AppHandle<R>) {
             WebviewUrl::App("tray".into()),
         )
         .title("")
-        .inner_size(340.0, 205.0)
+        .inner_size(330.0, 225.0)
         .decorations(false)
         .transparent(true)
         .skip_taskbar(true)
         .always_on_top(true)
-        .resizable(false)
+        .resizable(true)
+        .min_inner_size(275.0, 225.0)
+        .max_inner_size(800.0, 600.0)
         .visible(false)
         .build()
         {
             if let Some((x, y)) = load_popup_pos(app) {
                 let _ = popup.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
             } else {
-                position_popup(app, &popup, 205.0);
+                position_popup(app, &popup, 225.0);
             }
             let _ = popup.show();
             let _ = popup.set_focus();

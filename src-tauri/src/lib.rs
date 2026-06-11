@@ -218,6 +218,7 @@ pub fn run() {
             commands::discord_get,
             commands::discord_set,
             commands::get_auth_token,
+            commands::set_popup_size,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
