@@ -366,6 +366,7 @@
     // invoke("set_crossfade", { duration: crossfade }); // crossfade disabled
     await restorePopupSize();
     window.addEventListener('resize', savePopupSize);
+    window.addEventListener('focus', checkClipboard);
     checkClipboard();
     if (bgViz === "cava" || bgViz === "spectrum") startViz();
     unlistenNav = await listen("ytune-navigating", () => {
@@ -448,6 +449,7 @@
 
   onDestroy(() => {
     window.removeEventListener('resize', savePopupSize);
+    window.removeEventListener('focus', checkClipboard);
     if (crossAnimFrame) cancelAnimationFrame(crossAnimFrame);
     if (cycleAnimFrame) cancelAnimationFrame(cycleAnimFrame);
     unlisten?.();
@@ -491,6 +493,7 @@
       await invoke('navigate_ytm', { url });
       showLinkInput = false;
       linkUrl = '';
+      clipboardUrl = '';
       // Clear stale state immediately — inject will repopulate once new page loads
       queue = [];
       showQueue = false;
