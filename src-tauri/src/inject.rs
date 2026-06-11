@@ -164,21 +164,36 @@ pub const INJECT_JS: &str = r##"
     }
 
     function getQueue() {
-        const items = document.querySelectorAll('ytmusic-player-queue-item');
+        // Scope to the queue panel to avoid picking up items rendered in other DOM contexts
+        const container = document.querySelector('ytmusic-player-queue #contents')
+                       || document.querySelector('ytmusic-player-queue');
+        if (!container) return [];
+        const items = container.querySelectorAll('ytmusic-player-queue-item');
         if (items.length < 2) return [];
-        const all = Array.from(items).map((el, idx) => ({
+        const raw = Array.from(items).map((el, idx) => ({
             title:    el.querySelector('.song-title')?.textContent?.trim() || '',
             artist:   el.querySelector('.byline')?.textContent?.trim() || '',
             current:  el.hasAttribute('selected'),
             domIndex: idx,
         }));
+        // Deduplicate by title (case-insensitive) — YTM virtual list can render the same
+        // track at multiple DOM positions, both consecutively and non-consecutively
+        const seen = new Set();
+        const all = raw.filter(item => {
+            const key = item.title.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+        // During transitions YTM may mark multiple items as selected — use only the first
         const ci = all.findIndex(i => i.current);
-        if (pollCount % 10 === 1) {
-            console.log('[ytune] queue total=' + items.length + ' currentIdx=' + ci,
-                all.slice(0,5).map(x => x.title + (x.current?' [CUR]':'')));
-        }
         if (ci === -1) return [];
-        return all.slice(Math.max(0, ci - 2), Math.min(all.length, ci + 4));
+        all.forEach((item, idx) => { item.current = idx === ci; });
+        if (pollCount % 10 === 1) {
+            console.log('[ytune] queue raw=' + raw.length + ' deduped=' + all.length + ' currentIdx=' + ci);
+            console.log('[ytune] queue items:', all.slice(Math.max(0,ci-1), ci+4).map(x => '"' + x.title + '" / "' + x.artist + '"' + (x.current?' [CUR]':'')));
+        }
+        return all.slice(Math.max(0, ci - 6), Math.min(all.length, ci + 7));
     }
 
     // Parse "m:ss", "mm:ss", or "h:mm:ss" text to seconds

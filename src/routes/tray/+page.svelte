@@ -4,7 +4,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, onDestroy, tick } from "svelte";
 
-  const MAX_ITEMS = 5;
+  const MAX_ITEMS = 13;
 
   const THEMES = [
     { name: 'Purple',  h: 280, s: 65 },
