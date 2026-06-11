@@ -352,6 +352,12 @@ pub const INJECT_JS: &str = r##"
             paletteH:      _palette.h,
             paletteS:      _palette.s,
             thumbnailData: _palette.url === thumb ? (_thumbData.display || _thumbData.data) : '',
+            // Discord's image proxy can't fetch yt3.googleusercontent.com — use ytimg CDN instead
+            thumbnailDiscord: (function() {
+                const vid = getVideoId();
+                if (vid) return 'https://i.ytimg.com/vi/' + vid + '/hqdefault.jpg';
+                return thumb || '';
+            })(),
         };
     }
 

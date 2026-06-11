@@ -34,6 +34,10 @@ pub fn start_discord_thread(handle: tauri::AppHandle) {
                     println!("[discord] connected");
                     if let Some(state) = handle.try_state::<DiscordState>() {
                         *state.0.lock().unwrap() = Some(client);
+                        // Force immediate resend on reconnect so Discord shows correct state
+                        if let Some(ts) = handle.try_state::<crate::DiscordTrackState>() {
+                            ts.0.lock().unwrap().2 = 0;
+                        }
                         loop {
                             std::thread::sleep(std::time::Duration::from_secs(5));
                             let gone = handle.try_state::<DiscordState>()
@@ -63,6 +67,10 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
     let current_time = state["currentTime"].as_f64().unwrap_or(0.0);
     let duration     = state["duration"].as_f64().unwrap_or(0.0);
     let thumbnail    = state["thumbnail"].as_str().unwrap_or("").to_string();
+    let thumbnail_discord = state["thumbnailDiscord"].as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&thumbnail)
+        .to_string();
 
     let palette_str = match (state["paletteH"].as_array(), state["paletteS"].as_array()) {
         (Some(hs), Some(ss)) => format!("{:?}/{:?}", hs, ss),
@@ -88,18 +96,18 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
         let mut t = ts.0.lock().unwrap();
         let song_changed      = t.0 != title;
         let play_changed      = t.3 != playing;
-        let thumbnail_changed = t.4 != thumbnail && !thumbnail.is_empty();
+        let thumbnail_changed = t.4 != thumbnail_discord && !thumbnail_discord.is_empty();
         let liked_changed     = t.5 != liked;
         let stale             = now_unix - t.2 >= 15;
 
         if song_changed {
             // Use now_unix as song_start to avoid stale currentTime from the previous track
-            *t = (title.clone(), now_unix, now_unix, playing, thumbnail.clone(), liked);
+            *t = (title.clone(), now_unix, now_unix, playing, thumbnail_discord.clone(), liked);
             true
         } else if play_changed || thumbnail_changed || liked_changed || stale {
             t.2 = now_unix;
             t.3 = playing;
-            t.4 = thumbnail.clone();
+            t.4 = thumbnail_discord.clone();
             t.5 = liked;
             true
         } else {
@@ -126,12 +134,12 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
                     (true,  false) => "",
                 };
 
-                let assets = if thumbnail.starts_with("https://") {
-                    println!("[discord] thumb url: {}", &thumbnail[..thumbnail.len().min(80)]);
-                    let a = activity::Assets::new().large_image(&thumbnail);
+                let assets = if thumbnail_discord.starts_with("https://") {
+                    println!("[discord] thumb url: {}", &thumbnail_discord[..thumbnail_discord.len().min(80)]);
+                    let a = activity::Assets::new().large_image(&thumbnail_discord);
                     if status_line.is_empty() { a } else { a.large_text(status_line) }
                 } else {
-                    println!("[discord] no https thumb, using fallback. thumb={:?}", &thumbnail[..thumbnail.len().min(30)]);
+                    println!("[discord] no https thumb, using fallback. thumb={:?}", &thumbnail_discord[..thumbnail_discord.len().min(30)]);
                     let a = activity::Assets::new().large_image("ytmusic");
                     if status_line.is_empty() { a } else { a.large_text(status_line) }
                 };
