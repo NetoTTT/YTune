@@ -1112,8 +1112,17 @@
   .vol-mute:hover { color: #f5f5f7; }
   .vol-pct { font-size: 10px; color: #636366; width: 28px; text-align: right; flex-shrink: 0; }
 
-  /* Queue */
-  .queue { border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; flex: none; max-height: 340px; overflow-y: auto; scrollbar-width: none; animation: panel-enter 80ms ease-out both; }
+  /* Queue — frosted glass panel so cava/spectrum bars don't bleed into text */
+  .queue {
+    flex: none; max-height: 340px; overflow-y: auto; scrollbar-width: none;
+    animation: panel-enter 80ms ease-out both;
+    background: rgba(10, 10, 12, 0.78);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border-radius: 10px;
+    padding: 8px 10px 6px;
+    margin: 0 -3px -2px;
+  }
   .queue::-webkit-scrollbar { display: none; }
   .queue-label {
     font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -1125,7 +1134,7 @@
     align-items: center; gap: 6px;
     padding: 6px 6px 6px 4px; border-radius: 6px; transition: background 0.12s;
   }
-  li:hover          { background: rgba(255,255,255,0.05); }
+  li:hover          { background: rgba(255,255,255,0.06); }
   li.q-clickable    { cursor: pointer; }
   li.current        { background: var(--accent-dim); transition: background 0.6s ease; }
 
