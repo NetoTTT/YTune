@@ -11,6 +11,8 @@ pub const INJECT_JS: &str = r##"
         playPause: () => document.querySelector('#play-pause-button button')?.click(),
         next:      () => document.querySelector('.next-button.ytmusic-player-bar button')?.click(),
         previous:  () => document.querySelector('.previous-button.ytmusic-player-bar button')?.click(),
+        shuffle:   () => document.querySelector('.shuffle.ytmusic-player-bar button')?.click(),
+        repeat:    () => document.querySelector('.repeat.ytmusic-player-bar button')?.click(),
         seek: (t) => {
             // YTM uses a continuous DASH stream so video.currentTime is the absolute playlist
             // offset, not the song-relative time. Use playerApi.seekTo() which handles the
@@ -293,6 +295,13 @@ pub const INJECT_JS: &str = r##"
                          })(),
             currentTime: times.cur || 0,
             duration:    times.dur || 0,
+            shuffled:    document.querySelector('ytmusic-player-bar')?.hasAttribute('shuffle-on') ?? false,
+            repeatMode: (function() {
+                const mode = document.querySelector('ytmusic-player-bar')?.getAttribute('repeat-mode') || 'NONE';
+                if (mode === 'ONE') return 'one';
+                if (mode === 'ALL') return 'all';
+                return 'none';
+            })(),
             queue:       getQueue(),
             paletteH:      _palette.h,
             paletteS:      _palette.s,

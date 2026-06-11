@@ -54,6 +54,8 @@ pub fn player_control<R: Runtime>(app: tauri::AppHandle<R>, action: String) {
             "previous"   => "window.__ytune__?.previous()",
             "like"       => "window.__ytune__?.like()",
             "dislike"    => "window.__ytune__?.dislike()",
+            "shuffle"    => "window.__ytune__?.shuffle()",
+            "repeat"     => "window.__ytune__?.repeat()",
             _ => return,
         };
         let _ = main.eval(js);

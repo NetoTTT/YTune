@@ -22,7 +22,9 @@
   let thumbnail     = $state("");
   let thumbnailData = $state("");
   let liked         = $state(false);
-  let disliked    = $state(false);
+  let disliked      = $state(false);
+  let shuffled      = $state(false);
+  let repeatMode    = $state('none'); // 'none' | 'all' | 'one'
   let playing     = $state(false);
   let volume      = $state(100);
   let prevVolume  = 100;
@@ -406,6 +408,8 @@
       playing   = p.playing;
       if (!isVolAdjusting) volume = p.volume ?? volume;
       if (!songChanged) duration = newDur;
+      shuffled   = p.shuffled   ?? false;
+      repeatMode = p.repeatMode ?? 'none';
       queue = p.queue || [];
     });
   });
@@ -652,6 +656,12 @@
 
   <!-- ── Controls ── -->
   <section class="controls">
+    <button class="icon-btn" class:active={shuffled} onclick={() => control("shuffle")} aria-label="Shuffle" title="Shuffle">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M16.293 1.293a1 1 0 00-.001 1.415L18.585 5H17.21a7 7 0 00-5.823 3.118L6.95 14.774A5 5 0 012.79 17H2a1 1 0 000 2h.79a7 7 0 005.822-3.117l4.438-6.656A5 5 0 0117.21 7h1.376l-2.293 2.293a1 1 0 001.414 1.414L22.414 6l-4.707-4.707a1 1 0 00-1.414 0ZM2.789 5H2a1 1 0 000 2h.79a5 5 0 014.159 2.227l.647.97 1.202-1.802-.185-.277A7 7 0 002.789 5Zm13.504 8.293a1 1 0 00-.001 1.414L18.585 17H17.21a5 5 0 01-4.16-2.226l-.648-.972-1.202 1.803.186.278A7 7 0 0017.21 19h1.376l-2.293 2.294-.068.076a1 1 0 001.406 1.406l.076-.07L22.414 18l-4.707-4.707a1 1 0 00-1.414 0Z"/>
+      </svg>
+    </button>
+
     <button onclick={() => control("previous")} aria-label="Previous">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor">
         <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
@@ -677,6 +687,18 @@
     </button>
 
     <div class="secondary-controls">
+      <button class="icon-btn repeat-btn" class:active={repeatMode !== 'none'} onclick={() => control("repeat")} aria-label="Repeat" title="Repeat">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          {#if repeatMode === 'one'}
+            <path d="M17.293 1.293a1 1 0 000 1.415L18.586 4H7a5 5 0 00-5 5v4a1 1 0 102 0V9a3 3 0 013-3h11.586l-1.293 1.293a1 1 0 001.414 1.415L22.414 5l-3.707-3.707a1 1 0 00-1.414 0ZM21 10a1 1 0 00-1 1v4a3 3 0 01-3 3H5.414l1.293-1.292a1.001 1.001 0 00-1.414-1.415L1.586 19l3.707 3.707a1 1 0 101.414-1.413L5.414 20H17a5 5 0 005-5v-4a1 1 0 00-1-1Z"/>
+          {:else}
+            <path d="M17.293 1.293a1 1 0 000 1.415L18.586 4H7a5 5 0 00-5 5v4a1 1 0 102 0V9a3 3 0 013-3h11.586l-1.293 1.293a1 1 0 001.414 1.415L22.414 5l-3.707-3.707a1 1 0 00-1.414 0ZM21 10a1 1 0 00-1 1v4a3 3 0 01-3 3H5.414l1.293-1.292a1.001 1.001 0 00-1.414-1.415L1.586 19l3.707 3.707a1 1 0 101.414-1.413L5.414 20H17a5 5 0 005-5v-4a1 1 0 00-1-1Z"/>
+          {/if}
+        </svg>
+        {#if repeatMode === 'one'}
+          <span class="repeat-one">1</span>
+        {/if}
+      </button>
       <button class="icon-btn" class:active={liked}    onclick={() => control("like")}    aria-label="Like"    title="Like">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
           <path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"/>
@@ -882,7 +904,7 @@
   .times { display: flex; justify-content: space-between; font-size: 10px; color: #636366; }
 
   /* Controls */
-  .controls { display: flex; align-items: center; gap: 2px; }
+  .controls { display: flex; align-items: center; gap: 6px; }
   button {
     background: none; border: none; cursor: pointer;
     color: #f5f5f7; padding: 7px; border-radius: 8px;
@@ -899,13 +921,26 @@
   }
   .play:hover { background: hsla(var(--h), var(--s), 45%, 0.38); }
 
-  .secondary-controls { margin-left: auto; display: flex; align-items: center; }
-  .icon-btn { color: #636366; padding: 6px; }
-  .icon-btn:hover { color: #f5f5f7; background: none; }
-  .icon-btn.active { color: var(--accent); transition: color 0.6s ease; }
+  .secondary-controls { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .icon-btn { color: rgba(255,255,255,0.45); padding: 6px; }
+  .icon-btn:hover { color: rgba(255,255,255,0.75); background: rgba(255,255,255,0.07); }
+  .icon-btn.active {
+    color: #fff;
+    background: rgba(255,255,255,0.13);
+    border-radius: 7px;
+  }
 
   .queue-toggle { display: flex; align-items: center; gap: 4px; }
   .queue-count  { font-size: 10px; font-weight: 600; }
+
+  .repeat-btn { position: relative; }
+  .repeat-one {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 8px; font-weight: 800; line-height: 1;
+    color: var(--accent);
+    pointer-events: none;
+  }
 
   /* Volume */
   .volume-section { display: flex; align-items: center; gap: 7px; padding: 0 1px; }
