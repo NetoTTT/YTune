@@ -166,6 +166,38 @@ pub fn read_clipboard() -> String {
 }
 
 #[tauri::command]
+pub fn listen_with_me_set<R: Runtime>(app: tauri::AppHandle<R>, enabled: bool) {
+    if let Some(rs) = app.try_state::<crate::RoomState>() {
+        rs.0.lock().unwrap().listen_with_me = enabled;
+    }
+}
+
+#[tauri::command]
+pub fn get_pending_join_room<R: Runtime>(app: tauri::AppHandle<R>) -> Option<String> {
+    app.try_state::<crate::RoomState>().and_then(|rs| {
+        rs.0.lock().unwrap().pending_join.take()
+    })
+}
+
+#[tauri::command]
+pub fn autostart_get<R: Runtime>(app: tauri::AppHandle<R>) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn autostart_set<R: Runtime>(app: tauri::AppHandle<R>, enabled: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    // Mark as explicitly configured so first-launch logic never overrides
+    if let Ok(flag) = app.path().app_config_dir().map(|d| d.join("autostart_configured")) {
+        let _ = std::fs::create_dir_all(flag.parent().unwrap_or(&flag));
+        let _ = std::fs::write(&flag, b"1");
+    }
+    if enabled { let _ = app.autolaunch().enable(); }
+    else        { let _ = app.autolaunch().disable(); }
+}
+
+#[tauri::command]
 pub fn navigate_ytm<R: Runtime>(app: tauri::AppHandle<R>, url: String) -> Result<(), String> {
     let url = url.trim().to_string();
     if !url.contains("music.youtube.com") {

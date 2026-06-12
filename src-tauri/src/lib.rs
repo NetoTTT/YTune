@@ -17,6 +17,16 @@ use inject::INJECT_JS;
 
 pub struct AuthTokenState(pub Mutex<Option<String>>);
 
+pub struct RoomState(pub Mutex<RoomInfo>);
+
+#[derive(Default, Clone)]
+pub struct RoomInfo {
+    pub room_id:          Option<String>,
+    pub role:             Option<String>, // "host" | "member"
+    pub listen_with_me:   bool,
+    pub pending_join:     Option<String>, // room ID from deep link, consumed by frontend on mount
+}
+
 fn parse_auth_token(url_str: &str) -> Option<String> {
     if !url_str.starts_with("ytune://auth/callback") {
         return None;
@@ -60,6 +70,24 @@ fn parse_navigate_url(url_str: &str) -> Option<String> {
     if target.contains("music.youtube.com") { Some(target) } else { None }
 }
 
+fn parse_join_room(url_str: &str) -> Option<String> {
+    if !url_str.starts_with("ytune://join") { return None; }
+    let query = url_str.split_once('?').map(|(_, q)| q)?;
+    query.split('&')
+        .find(|p| p.starts_with("room="))
+        .map(|p| p.trim_start_matches("room=").to_uppercase())
+        .filter(|r| r.len() == 6)
+}
+
+fn apply_join_room(app: &tauri::AppHandle, room_id: String) {
+    // Store so frontend can pick it up on mount (cold start race condition)
+    if let Some(rs) = app.try_state::<RoomState>() {
+        rs.0.lock().unwrap().pending_join = Some(room_id.clone());
+    }
+    // Also emit in case frontend is already running
+    let _ = app.emit("ytune-join-room", &room_id);
+}
+
 fn apply_navigate_url(app: &tauri::AppHandle, url: String) {
     if let Some(main) = app.get_webview_window("main") {
         if let Ok(parsed) = tauri::Url::parse(&url) {
@@ -92,6 +120,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Always show/focus the main window when a second instance is blocked
             if let Some(w) = app.get_webview_window("main") {
@@ -109,11 +138,16 @@ pub fn run() {
                     apply_navigate_url(app, url);
                     break;
                 }
+                if let Some(room_id) = parse_join_room(arg) {
+                    apply_join_room(app, room_id);
+                    break;
+                }
             }
         }))
         .manage(DiscordState(Mutex::new(None)))
         .manage(DiscordTrackState(Mutex::new((String::new(), 0, 0, false, String::new(), false))))
         .manage(AuthTokenState(Mutex::new(None)))
+        .manage(RoomState(Mutex::new(RoomInfo::default())))
         .setup(|app| {
             // Using events (plugin:event|emit) instead of commands because Tauri 2 only allows
             // plugin commands from remote origins — user commands require a plugin + permission file.
@@ -133,8 +167,29 @@ pub fn run() {
                         apply_navigate_url(&handle_auth, nav);
                         break;
                     }
+                    if let Some(room_id) = parse_join_room(&s) {
+                        apply_join_room(&handle_auth, room_id);
+                        break;
+                    }
                 }
             });
+
+            // First-launch autostart: enable automatically unless user has explicitly toggled it
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let flag_path = app.path().app_config_dir()
+                    .map(|d| d.join("autostart_configured"));
+                let already_configured = flag_path.as_ref()
+                    .map(|p| p.exists())
+                    .unwrap_or(true);
+                if !already_configured {
+                    let _ = app.autolaunch().enable();
+                    if let Ok(ref p) = flag_path {
+                        let _ = std::fs::create_dir_all(p.parent().unwrap_or(p));
+                        let _ = std::fs::write(p, b"1");
+                    }
+                }
+            }
 
             let handle = app.handle().clone();
             app.listen("ytune-state", move |event| {
@@ -190,6 +245,17 @@ pub fn run() {
                     let _ = main.eval(&format!(
                         "window.__ytune__?.setRoomStatus?.({payload})"
                     ));
+                }
+                // Update RoomState for Discord button
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                    if let Some(rs) = handle_room.try_state::<RoomState>() {
+                        let mut info = rs.0.lock().unwrap();
+                        info.room_id = v["roomId"].as_str().map(|s| s.to_string());
+                        info.role    = v["role"].as_str().map(|s| s.to_string());
+                        if v["roomId"].is_null() || !v["roomId"].is_string() {
+                            info.listen_with_me = false; // reset when leaving room
+                        }
+                    }
                 }
             });
 
@@ -314,6 +380,10 @@ pub fn run() {
             commands::set_popup_size,
             commands::navigate_ytm,
             commands::read_clipboard,
+            commands::listen_with_me_set,
+            commands::get_pending_join_room,
+            commands::autostart_get,
+            commands::autostart_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

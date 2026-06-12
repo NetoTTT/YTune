@@ -168,6 +168,20 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
                 if playing {
                     act = act.timestamps(activity::Timestamps::new().start(start_ts));
                 }
+
+                // "Listen With Me" button — only when host enabled it
+                let listen_url = app.try_state::<crate::RoomState>().and_then(|rs| {
+                    let info = rs.0.lock().unwrap();
+                    if info.listen_with_me && info.role.as_deref() == Some("host") {
+                        info.room_id.as_ref().map(|id| {
+                            format!("https://ytune.asktome.com.br/listen?room={id}")
+                        })
+                    } else { None }
+                });
+                if let Some(ref url) = listen_url {
+                    act = act.buttons(vec![activity::Button::new("Listen With Me", url)]);
+                }
+
                 let result = client.set_activity(act);
                 match result {
                     Ok(_)  => println!("[discord] set_activity ok title={:?} playing={} liked={}", title, playing, liked),

@@ -40,6 +40,7 @@
   let showConfig      = $state(false);
   let discordEnabled  = $state(true);
   let queueThumbs     = $state(false);
+  let autostart       = $state(false);
   let colorMode    = $state("dynamic"); // "dynamic" | "fixed"
   let fixedTheme   = $state(0);         // index into THEMES
   let bgBase       = $state("art");     // "solid" | "art"  (background image)
@@ -63,6 +64,7 @@
   let unlisten;
   let unlistenViz;
   let unlistenNav;
+  let unlistenJoinRoom;
   let updateAvailable   = $state(null); // { version, update } or null
   let updateInstalling  = $state(false);
   let unlistenInstall;
@@ -71,6 +73,7 @@
   const BACKEND_WS = 'wss://ytune.asktome.com.br/ws';
   let roomId           = $state(null);
   let roomRole         = $state(null);   // 'host' | 'member' | null
+  let listenWithMe     = $state(false);  // host-only toggle for Discord button
   let memberCount      = $state(0);
   let participants     = $state([]);     // [{role, username, avatarUrl}]
   let showRoomInput    = $state(false);
@@ -78,6 +81,7 @@
   let trackUrl         = $state('');
   let ws               = null;
   let wsReconnectTimer = null;
+  let pendingJoinRoomId = null; // room ID from deep link, joined when WS is ready
   let pendingSeekPos      = null;
   let _pendingStartedAtMs = null; // wall clock anchor for fresh seek when player loads
   let _lastPlayingSync    = null;
@@ -243,7 +247,7 @@
   const CFG_CROSSFADE = 76;
 
   function syncConfigSize() {
-    let h = CFG_BASE + CFG_BG + CFG_VIZ_OPT + CFG_CROSSFADE + 76; // 76 = Queue thumbnails (always visible)
+    let h = CFG_BASE + CFG_BG + CFG_VIZ_OPT + CFG_CROSSFADE + 76 + 76; // 76 = Queue thumbs, 76 = Autostart
     if (colorMode === "fixed")                    h += CFG_PRESET;
     if (colorMode === "dynamic")                  h += CFG_SMOOTH;
     if (bgViz === "cava" || bgViz === "spectrum") h += CFG_VIZ;
@@ -404,6 +408,7 @@
     }
     loadConfig();
     discordEnabled = await invoke("discord_get").catch(() => true);
+    autostart      = await invoke("autostart_get").catch(() => false);
     const initH = colorMode === "fixed" ? THEMES[fixedTheme].h : 280;
     const initS = colorMode === "fixed" ? THEMES[fixedTheme].s : 65;
     currentPalette = { h: initH, s: initS };
@@ -426,8 +431,21 @@
       const t = e.payload;
       if (t) connectWs(t);
     });
+    // Pick up room ID from deep link that arrived before frontend was ready (cold start)
+    invoke('get_pending_join_room').then(id => {
+      if (id) pendingJoinRoomId = id;
+    });
     if (bgViz === "cava" || bgViz === "spectrum") startViz();
     unlistenInstall = await listen("ytune-install-update", () => installUpdate());
+    unlistenJoinRoom = await listen("ytune-join-room", (e) => {
+      const id = typeof e.payload === 'string' ? e.payload.trim().toUpperCase() : '';
+      if (id.length !== 6) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'join_room', roomId: id }));
+      } else {
+        pendingJoinRoomId = id; // will be sent in ws.onopen
+      }
+    });
     unlistenNav = await listen("ytune-navigating", () => {
       queue = [];
       showQueue = false;
@@ -529,6 +547,7 @@
     unlistenViz?.();
     unlistenInstall?.();
     unlistenNav?.();
+    unlistenJoinRoom?.();
     clearTimeout(wsReconnectTimer);
     ws?.close();
     stopViz();
@@ -631,8 +650,13 @@
     ws.onopen  = () => {
       wsStatus = 'connected';
       console.log('[ytune-room] WS connected');
-      // If we were in a room as member, re-join automatically after reconnect
-      if (roomId && roomRole === 'member') {
+      // Deep link: join room that arrived before WS was ready
+      if (pendingJoinRoomId) {
+        console.log('[ytune-room] consuming pending join for', pendingJoinRoomId);
+        ws.send(JSON.stringify({ type: 'join_room', roomId: pendingJoinRoomId }));
+        pendingJoinRoomId = null;
+      } else if (roomId && roomRole === 'member') {
+        // Reconnect: re-join room we were in before disconnect
         console.log('[ytune-room] auto-rejoining room', roomId);
         ws.send(JSON.stringify({ type: 'join_room', roomId }));
       }
@@ -738,6 +762,7 @@
         roomId = null; roomRole = null; memberCount = 0;
         _syncedToVideoId = null; _lastPlayingSync = null; _pendingStartedAtMs = null;
         _lastSentUrl = ''; _lastSentPlaying = null; _lastSentPosition = 0; _playPauseAt = 0;
+        listenWithMe = false; invoke('listen_with_me_set', { enabled: false });
         emit('ytune-room-status', {});
         break;
     }
@@ -1012,7 +1037,22 @@
         <strong>{roomId}</strong>
         <span class="room-sub">{roomRole === 'host' ? 'host' : 'listening'}{memberCount > 0 ? ` · ${memberCount}` : ''}</span>
       </span>
-      <button class="room-leave" onclick={leaveRoom} title="Leave room">✕</button>
+      <span class="room-actions">
+        {#if roomRole === 'host'}
+          <button
+            class="room-lwm"
+            class:lwm-on={listenWithMe}
+            onclick={() => { listenWithMe = !listenWithMe; invoke('listen_with_me_set', { enabled: listenWithMe }); }}
+            title={listenWithMe ? 'Listen With Me button ON (visible on Discord)' : 'Enable Listen With Me button on Discord'}
+            aria-label="Listen With Me"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03z"/>
+            </svg>
+          </button>
+        {/if}
+        <button class="room-leave" onclick={leaveRoom} title="Leave room">✕</button>
+      </span>
     </div>
   {/if}
 
@@ -1122,6 +1162,13 @@
         <div class="mode-row">
           <button class="mode-btn" class:mode-active={queueThumbs}  onclick={() => { queueThumbs = true;  saveConfig(); }}>On</button>
           <button class="mode-btn" class:mode-active={!queueThumbs} onclick={() => { queueThumbs = false; saveConfig(); }}>Off</button>
+        </div>
+      </div>
+      <div class="cfg-section">
+        <p class="cfg-label">Start with system</p>
+        <div class="mode-row">
+          <button class="mode-btn" class:mode-active={autostart}  onclick={() => { autostart = true;  invoke('autostart_set', { enabled: true }); }}>On</button>
+          <button class="mode-btn" class:mode-active={!autostart} onclick={() => { autostart = false; invoke('autostart_set', { enabled: false }); }}>Off</button>
         </div>
       </div>
 
@@ -1389,11 +1436,19 @@
   .room-info { display: flex; align-items: center; gap: 5px; min-width: 0; }
   .room-info strong { color: var(--accent); letter-spacing: 0.04em; flex-shrink: 0; }
   .room-sub { opacity: 0.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .room-actions { display: flex; align-items: center; gap: 0; flex-shrink: 0; }
   .room-leave {
     background: none; border: none; color: rgba(255,255,255,0.35);
-    cursor: pointer; padding: 2px 2px 2px 6px; font-size: 10px; line-height: 1; flex-shrink: 0;
+    cursor: pointer; padding: 2px 2px 2px 6px; font-size: 10px; line-height: 1;
   }
   .room-leave:hover { color: #ff453a; }
+  .room-lwm {
+    background: none; border: none; cursor: pointer;
+    color: rgba(255,255,255,0.3); padding: 2px 4px; line-height: 1;
+    transition: color .15s;
+  }
+  .room-lwm:hover { color: #7289da; }
+  .room-lwm.lwm-on { color: #7289da; }
   .add-bot-btn {
     display: flex; align-items: center; justify-content: center; gap: 5px;
     width: 100%; padding: 5px 10px;
