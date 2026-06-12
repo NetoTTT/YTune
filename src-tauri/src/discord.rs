@@ -5,6 +5,19 @@ use tauri::{Emitter, Manager};
 
 pub const DISCORD_CLIENT_ID: &str = "1513965769199980634";
 
+// Clamp a string to Discord's 2–128 char requirement, truncating with ellipsis if needed.
+fn discord_field(s: &str, fallback: &str) -> String {
+    let s = s.trim();
+    let s = if s.chars().count() > 128 {
+        let mut t: String = s.chars().take(127).collect();
+        t.push('…');
+        t
+    } else {
+        s.to_string()
+    };
+    if s.chars().count() < 2 { fallback.to_string() } else { s }
+}
+
 // Removes view/like count segments from YTM's subtitle field (e.g. "803 mil visualizações")
 fn clean_artist(raw: &str) -> String {
     const STAT_KEYWORDS: &[&str] = &["visualiza", "marca", "gostei", "views", "likes"];
@@ -144,11 +157,13 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
                     if status_line.is_empty() { a } else { a.large_text(status_line) }
                 };
 
+                let details = discord_field(&title, "♪");
+                let state   = discord_field(&artist, "Unknown artist");
                 let mut act = activity::Activity::new()
                     .activity_type(activity::ActivityType::Listening)
                     .status_display_type(activity::StatusDisplayType::Details)
-                    .details(&title)
-                    .state(&artist)
+                    .details(&details)
+                    .state(&state)
                     .assets(assets);
                 if playing {
                     act = act.timestamps(activity::Timestamps::new().start(start_ts));
