@@ -78,8 +78,16 @@
   let trackUrl         = $state('');
   let ws               = null;
   let wsReconnectTimer = null;
-  let pendingSeekPos   = null;
-  let _lastPlayingSync = null; // last playing state applied by sync (debounce)
+  let pendingSeekPos      = null;
+  let _pendingStartedAtMs = null; // wall clock anchor for fresh seek when player loads
+  let _lastPlayingSync    = null;
+  let _playPauseAt        = 0;    // epoch ms of last play/pause toggle — debounce
+  let _syncedToVideoId    = null;
+  let _lastSentUrl        = '';
+  let _lastSentPlaying    = null;
+  let _lastSentPosition   = 0;
+  const SYNC_DRIFT_MAX    = 8;
+  const PLAY_PAUSE_GAP    = 1500; // ms — ignore play/pause messages within this window after toggling
 
   function extractVideoId(url) {
     try { const m = url.match(/[?&]v=([^&]+)/); return m ? m[1] : url; } catch { return url; }
@@ -493,9 +501,13 @@
       playing   = p.playing;
       // Sync room: consume pending seek once player has loaded the new song (duration > 0 = metadata ready)
       if (pendingSeekPos !== null && p.duration > 0) {
-        const pos = pendingSeekPos;
+        // Recompute position from wall clock to correct for navigation delay
+        const pos = _pendingStartedAtMs !== null
+          ? Math.max(0, (Date.now() - _pendingStartedAtMs) / 1000)
+          : pendingSeekPos;
         pendingSeekPos = null;
-        console.log('[ytune-room] player ready after nav, seeking to', pos);
+        _pendingStartedAtMs = null;
+        console.log('[ytune-room] player ready after nav, seeking to', pos.toFixed(1));
         setTimeout(() => invoke('player_seek', { position: pos }).catch(() => {}), 300);
       }
       wsSendState();
@@ -653,60 +665,113 @@
         participants = msg.participants ?? participants;
         emit('ytune-room-status', { roomId, role: roomRole, memberCount, participants });
         break;
-      case 'sync':
-        console.log('[ytune-room] sync | role:', roomRole, '| msg.url:', msg.trackUrl, '| local url:', trackUrl, '| pos:', msg.position);
-        if (roomRole === 'member' && msg.trackUrl) {
-          const latency = (Date.now() - msg.ts) / 1000;
-          const pos = msg.position + (msg.playing ? latency : 0);
-          const sameVideo = extractVideoId(msg.trackUrl) === extractVideoId(trackUrl);
-          if (!sameVideo) {
-            if (pendingSeekPos !== null) {
-              // Already navigating — just update the target position
-              console.log('[ytune-room] sync: nav in progress, updating pendingSeek=', pos);
-              pendingSeekPos = pos;
-            } else {
-              console.log('[ytune-room] sync: navigating, pendingSeek=', pos);
-              pendingSeekPos = pos;
-              setTimeout(() => { if (pendingSeekPos !== null) { console.warn('[ytune-room] pendingSeek timeout, clearing'); pendingSeekPos = null; } }, 15000);
-              invoke('navigate_ytm', { url: msg.trackUrl })
-                .then(() => console.log('[ytune-room] navigate_ytm ok'))
-                .catch(e => { console.error('[ytune-room] navigate_ytm FAILED:', e); pendingSeekPos = null; });
+      case 'play_now': {
+        if (roomRole !== 'member' || !msg.url) break;
+        const hostVid = extractVideoId(msg.url);
+
+        // Compute target position from wall clock
+        const targetPos = msg.playing
+          ? Math.max(0, (Date.now() - msg.startedAtMs) / 1000)
+          : msg.pausedElapsedMs / 1000;
+
+        if (_syncedToVideoId === hostVid) {
+          if (pendingSeekPos !== null) {
+            // Navigation still in progress — just update the seek target, never seek now
+            pendingSeekPos = targetPos;
+          } else {
+            // Stable: check drift and play/pause
+            const drift = Math.abs(targetPos - currentTime);
+            if (drift > SYNC_DRIFT_MAX) {
+              console.log('[ytune-room] play_now: drift', drift.toFixed(1), 's → seek to', targetPos.toFixed(1));
+              invoke('player_seek', { position: targetPos }).catch(() => {});
             }
-          } else { // same video
-            const drift = Math.abs(pos - currentTime);
-            if (drift > 3) {
-              console.log('[ytune-room] sync: drift', drift.toFixed(1), 's → seeking to', pos);
-              invoke('player_seek', { position: pos })
-                .then(() => console.log('[ytune-room] seek ok'))
-                .catch(e => console.error('[ytune-room] seek FAILED:', e));
+            if (typeof msg.playing === 'boolean' && msg.playing !== _lastPlayingSync && msg.playing !== playing
+                && (Date.now() - _playPauseAt) > PLAY_PAUSE_GAP) {
+              _lastPlayingSync = msg.playing;
+              _playPauseAt = Date.now();
+              invoke('player_control', { action: 'play_pause' }).catch(() => {});
             }
           }
-          // Pause/resume sync: only act if state changed and debounce prevents feedback
-          if (typeof msg.playing === 'boolean' && msg.playing !== _lastPlayingSync && msg.playing !== playing) {
-            _lastPlayingSync = msg.playing;
-            console.log('[ytune-room] sync: play state →', msg.playing);
-            invoke('player_control', { action: 'play_pause' }).catch(() => {});
+        } else {
+          // New song — navigate and seek once player is ready
+          console.log('[ytune-room] play_now: navigate to', hostVid, 'seek=', targetPos.toFixed(1));
+          _syncedToVideoId    = hostVid;
+          _pendingStartedAtMs = msg.playing ? msg.startedAtMs : null;
+          if (pendingSeekPos !== null) {
+            pendingSeekPos = targetPos;
+          } else {
+            pendingSeekPos = targetPos;
+            setTimeout(() => { pendingSeekPos = null; _pendingStartedAtMs = null; }, 20000);
+            invoke('navigate_ytm', { url: msg.url }).catch(() => { pendingSeekPos = null; _pendingStartedAtMs = null; });
+          }
+          // Don't toggle play/pause mid-navigation — let it stabilize first
+        }
+        break;
+      }
+      case 'paused': {
+        if (roomRole !== 'member') break;
+        if (playing && _lastPlayingSync !== false && (Date.now() - _playPauseAt) > PLAY_PAUSE_GAP) {
+          _lastPlayingSync = false;
+          _playPauseAt = Date.now();
+          invoke('player_control', { action: 'play_pause' }).catch(() => {});
+        }
+        break;
+      }
+      case 'resumed': {
+        if (roomRole !== 'member') break;
+        if (!playing && _lastPlayingSync !== true && (Date.now() - _playPauseAt) > PLAY_PAUSE_GAP) {
+          _lastPlayingSync = true;
+          _playPauseAt = Date.now();
+          invoke('player_control', { action: 'play_pause' }).catch(() => {});
+        }
+        if (msg.startedAtMs && (Date.now() - _playPauseAt) > PLAY_PAUSE_GAP) {
+          const pos = Math.max(0, (Date.now() - msg.startedAtMs) / 1000);
+          const drift = Math.abs(pos - currentTime);
+          if (drift > SYNC_DRIFT_MAX) {
+            invoke('player_seek', { position: pos }).catch(() => {});
           }
         }
         break;
+      }
       case 'room_dissolved':
       case 'room_left':
         roomId = null; roomRole = null; memberCount = 0;
+        _syncedToVideoId = null; _lastPlayingSync = null; _pendingStartedAtMs = null;
+        _lastSentUrl = ''; _lastSentPlaying = null; _lastSentPosition = 0; _playPauseAt = 0;
         emit('ytune-room-status', {});
         break;
     }
   }
 
-  let _lastWsPayload = '';
   function wsSendState() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (roomRole !== 'host') return;
-    if (!trackUrl) { console.log('[ytune-room] wsSendState: no trackUrl'); return; }
-    const payload = { type: 'state', trackUrl, position: Math.round(currentTime), playing, ts: Date.now() };
-    const key = trackUrl + '|' + payload.position + '|' + playing;
-    if (key === _lastWsPayload) return;
-    _lastWsPayload = key;
-    ws.send(JSON.stringify(payload));
+    if (!trackUrl) return;
+
+    // New or changed song → play_track with current position
+    if (trackUrl !== _lastSentUrl) {
+      _lastSentUrl      = trackUrl;
+      _lastSentPlaying  = playing;
+      _lastSentPosition = currentTime;
+      ws.send(JSON.stringify({ type: 'play_track', url: trackUrl, position: Math.round(currentTime) }));
+      return;
+    }
+
+    // Play/pause changed → pause or resume
+    if (playing !== _lastSentPlaying) {
+      _lastSentPlaying = playing;
+      ws.send(JSON.stringify({ type: playing ? 'resume' : 'pause' }));
+      _lastSentPosition = currentTime;
+      return;
+    }
+
+    // Seek detection: position jumped more than expected natural ~1s advance
+    const expectedDrift = currentTime - (_lastSentPosition + 1.5);
+    _lastSentPosition = currentTime;
+    if (Math.abs(expectedDrift) > 5) {
+      console.log('[ytune-room] host seek detected, resending play_track at', currentTime.toFixed(1));
+      ws.send(JSON.stringify({ type: 'play_track', url: trackUrl, position: Math.round(currentTime) }));
+    }
   }
 
   function joinRoom() {
