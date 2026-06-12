@@ -198,6 +198,7 @@ pub const INJECT_JS: &str = r##"
         const raw = Array.from(items).map((el, idx) => ({
             title:    el.querySelector('.song-title')?.textContent?.trim() || '',
             artist:   el.querySelector('.byline')?.textContent?.trim() || '',
+            thumb:    el.querySelector('yt-img-shadow img')?.src || '',
             current:  el.hasAttribute('selected'),
             domIndex: idx,
         }));

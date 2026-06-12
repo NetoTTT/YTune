@@ -39,6 +39,7 @@
   let showVolume  = $state(false);
   let showConfig      = $state(false);
   let discordEnabled  = $state(true);
+  let queueThumbs     = $state(false);
   let colorMode    = $state("dynamic"); // "dynamic" | "fixed"
   let fixedTheme   = $state(0);         // index into THEMES
   let bgBase       = $state("art");     // "solid" | "art"  (background image)
@@ -207,6 +208,7 @@
         bgBase = cfg.bgBase || "art";
         bgViz  = cfg.bgViz  || "none";
       }
+      queueThumbs = cfg.queueThumbs ?? false;
     } catch {}
   }
 
@@ -218,7 +220,7 @@
   function saveConfig() {
     try {
       localStorage.setItem("ytune-config", JSON.stringify({
-        colorMode, fixedTheme, bgBase, bgViz, vizColorMode, cycleMode,
+        colorMode, fixedTheme, bgBase, bgViz, vizColorMode, cycleMode, queueThumbs,
       }));
     } catch {}
   }
@@ -1050,6 +1052,13 @@
           <button class="mode-btn" class:mode-active={!discordEnabled} onclick={toggleDiscord}>Off</button>
         </div>
       </div>
+      <div class="cfg-section">
+        <p class="cfg-label">Queue thumbnails</p>
+        <div class="mode-row">
+          <button class="mode-btn" class:mode-active={queueThumbs}  onclick={() => { queueThumbs = true;  saveConfig(); }}>On</button>
+          <button class="mode-btn" class:mode-active={!queueThumbs} onclick={() => { queueThumbs = false; saveConfig(); }}>Off</button>
+        </div>
+      </div>
 
     </section>
   {:else}
@@ -1205,7 +1214,11 @@
       <ul>
         {#each queue.slice(0, MAX_ITEMS) as item}
           <li class:current={item.current} class:q-clickable={!item.current} onclick={() => { if (!item.current) control(`queue_jump_${item.domIndex}`); }}>
-            <span class="dot">{item.current ? "▶" : "·"}</span>
+            {#if queueThumbs && item.thumb}
+              <img class="q-thumb" src={item.thumb} alt="" draggable="false" />
+            {:else}
+              <span class="dot">{item.current ? "▶" : "·"}</span>
+            {/if}
             <span class="q-title" title={item.title}>{item.title}</span>
             <span class="q-artist" title={item.artist}>{item.artist}</span>
           </li>
@@ -1582,6 +1595,11 @@
 
   .dot { font-size: 10px; color: #636366; text-align: center; line-height: 1; }
   li.current .dot { color: var(--accent); }
+  .q-thumb {
+    width: 28px; height: 28px; border-radius: 4px;
+    object-fit: cover; flex-shrink: 0;
+  }
+  li.current .q-thumb { box-shadow: 0 0 0 1.5px var(--accent); }
 
   .q-title {
     font-size: 12px; font-weight: 500;
