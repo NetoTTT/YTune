@@ -235,7 +235,7 @@
   const CFG_CROSSFADE = 76;
 
   function syncConfigSize() {
-    let h = CFG_BASE + CFG_BG + CFG_VIZ_OPT + CFG_CROSSFADE;
+    let h = CFG_BASE + CFG_BG + CFG_VIZ_OPT + CFG_CROSSFADE + 76; // 76 = Queue thumbnails (always visible)
     if (colorMode === "fixed")                    h += CFG_PRESET;
     if (colorMode === "dynamic")                  h += CFG_SMOOTH;
     if (bgViz === "cava" || bgViz === "spectrum") h += CFG_VIZ;
@@ -1633,9 +1633,14 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
-    padding: 6px 0 4px;
+    padding: 10px 12px 8px;
     flex: 1;
     animation: panel-enter 80ms ease-out both;
+    background: rgba(10, 10, 12, 0.78);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border-radius: 10px;
+    margin: 0 -3px -2px;
   }
   .cfg-section { display: flex; flex-direction: column; gap: 8px; }
   .cfg-label {
