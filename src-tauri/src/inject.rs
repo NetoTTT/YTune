@@ -1343,11 +1343,5 @@ pub const INJECT_JS: &str = r##"
         waitForHeaderButtons();
     }
 
-    // F12 opens DevTools for the main (YTM) window
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'F12') {
-            window.__TAURI_INTERNALS__?.invoke('open_devtools', { window: 'main' });
-        }
-    });
 })();
 "##;

@@ -166,13 +166,6 @@ pub fn read_clipboard() -> String {
 }
 
 #[tauri::command]
-pub fn open_devtools<R: Runtime>(app: tauri::AppHandle<R>, window: String) {
-    if let Some(w) = app.get_webview_window(&window) {
-        w.open_devtools();
-    }
-}
-
-#[tauri::command]
 pub fn navigate_ytm<R: Runtime>(app: tauri::AppHandle<R>, url: String) -> Result<(), String> {
     let url = url.trim().to_string();
     if !url.contains("music.youtube.com") {

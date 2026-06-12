@@ -248,7 +248,6 @@ pub fn run() {
                     if let Some(w) = h.get_webview_window("main") {
                         let _ = w.show();
                         let _ = w.set_focus();
-                        w.open_devtools();
                     }
                 });
             }
@@ -315,7 +314,6 @@ pub fn run() {
             commands::set_popup_size,
             commands::navigate_ytm,
             commands::read_clipboard,
-            commands::open_devtools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
