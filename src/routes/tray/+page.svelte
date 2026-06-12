@@ -1211,13 +1211,13 @@
   {#if showQueue && queue.length > 1}
     <section class="queue">
       <p class="queue-label">Queue</p>
-      <ul>
+      <ul class:with-thumbs={queueThumbs}>
         {#each queue.slice(0, MAX_ITEMS) as item}
           <li class:current={item.current} class:q-clickable={!item.current} onclick={() => { if (!item.current) control(`queue_jump_${item.domIndex}`); }}>
             {#if queueThumbs && item.thumb}
               <img class="q-thumb" src={item.thumb} alt="" draggable="false" />
             {:else}
-              <span class="dot">{item.current ? "▶" : "·"}</span>
+              <span class="dot" style={queueThumbs ? 'justify-self:center' : ''}>{item.current ? "▶" : "·"}</span>
             {/if}
             <span class="q-title" title={item.title}>{item.title}</span>
             <span class="q-artist" title={item.artist}>{item.artist}</span>
@@ -1589,6 +1589,7 @@
     align-items: center; gap: 6px;
     padding: 6px 6px 6px 4px; border-radius: 6px; transition: background 0.12s;
   }
+  ul.with-thumbs li { grid-template-columns: 28px 1fr auto; padding-block: 3px; }
   li:hover          { background: rgba(255,255,255,0.06); }
   li.q-clickable    { cursor: pointer; }
   li.current        { background: var(--accent-dim); transition: background 0.6s ease; }

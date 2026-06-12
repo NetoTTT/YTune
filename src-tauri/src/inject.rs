@@ -195,13 +195,61 @@ pub const INJECT_JS: &str = r##"
         if (!container) return [];
         const items = container.querySelectorAll('ytmusic-player-queue-item');
         if (items.length < 2) return [];
-        const raw = Array.from(items).map((el, idx) => ({
-            title:    el.querySelector('.song-title')?.textContent?.trim() || '',
-            artist:   el.querySelector('.byline')?.textContent?.trim() || '',
-            thumb:    el.querySelector('yt-img-shadow img')?.src || '',
-            current:  el.hasAttribute('selected'),
-            domIndex: idx,
-        }));
+
+        const currentDomIdx = Array.from(items).findIndex(el => el.hasAttribute('selected'));
+
+        // Primary source: ytmusic-player-queue Polymer data.
+        // queueEl.data is an Array of playlist item renderers populated before lazy image
+        // loading fires, so all items carry videoId and high-res album art thumbnails.
+        // queueOffset anchors the array to the current DOM item via pvr.selected.
+        let queueItems = null;
+        let queueOffset = 0;
+        try {
+            const qData = document.querySelector('ytmusic-player-queue')?.data;
+            if (Array.isArray(qData) && qData.length > 0) {
+                queueItems = qData;
+                const selIdx = qData.findIndex(qi => qi?.playlistPanelVideoRenderer?.selected);
+                if (selIdx >= 0) queueOffset = selIdx;
+            }
+        } catch(e) {}
+
+        const raw = Array.from(items).map((el, idx) => {
+            let vid = '', polymerThumb = '';
+
+            if (queueItems && currentDomIdx >= 0) {
+                const pos = queueOffset + (idx - currentDomIdx);
+                if (pos >= 0 && pos < queueItems.length) {
+                    try {
+                        const entry = queueItems[pos];
+                        // YTM uses several renderer types for queue entries
+                        const pvr = entry?.playlistPanelVideoRenderer
+                                 || entry?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.musicTwoRowItemRenderer
+                                 || entry?.playlistPanelVideoWrapperRenderer?.primaryRenderer
+                                 || (entry?.videoId ? entry : null);
+                        if (pvr?.videoId) {
+                            vid = pvr.videoId;
+                            const thumbs = pvr.thumbnail?.thumbnails;
+                            if (Array.isArray(thumbs) && thumbs.length > 0)
+                                polymerThumb = thumbs[thumbs.length - 1]?.url || '';
+                        }
+                    } catch(e) {}
+                }
+            }
+
+            // Fallback: lazy img.src for items outside queueItems range (ignore base64 placeholder)
+            const lazyImg = el.querySelector('yt-img-shadow img')?.src || '';
+            const thumb = polymerThumb
+                       || (vid ? 'https://i.ytimg.com/vi/' + vid + '/mqdefault.jpg' : '')
+                       || (lazyImg.startsWith('data:') ? '' : lazyImg);
+
+            return {
+                title:    el.querySelector('.song-title')?.textContent?.trim() || '',
+                artist:   el.querySelector('.byline')?.textContent?.trim() || '',
+                thumb,
+                current:  el.hasAttribute('selected'),
+                domIndex: idx,
+            };
+        });
         // Deduplicate by title (case-insensitive) — YTM virtual list can render the same
         // track at multiple DOM positions, both consecutively and non-consecutively
         const seen = new Set();
@@ -217,7 +265,7 @@ pub const INJECT_JS: &str = r##"
         all.forEach((item, idx) => { item.current = idx === ci; });
         if (pollCount % 10 === 1) {
             console.log('[ytune] queue raw=' + raw.length + ' deduped=' + all.length + ' currentIdx=' + ci);
-            console.log('[ytune] queue items:', all.slice(Math.max(0,ci-1), ci+4).map(x => '"' + x.title + '" / "' + x.artist + '"' + (x.current?' [CUR]':'')));
+            console.log('[ytune] queue items:', all.slice(Math.max(0,ci-1), ci+4).map(x => '"' + x.title + '" / "' + x.artist + '"' + (x.current?' [CUR]':'') + ' thumb=' + (x.thumb || 'NONE')));
         }
         return all.slice(Math.max(0, ci - 6), Math.min(all.length, ci + 7));
     }
