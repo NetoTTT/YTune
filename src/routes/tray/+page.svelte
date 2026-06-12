@@ -66,6 +66,32 @@
   let updateInstalling  = $state(false);
   let unlistenInstall;
 
+  // ── Sync rooms ────────────────────────────────────────────────────
+  const BACKEND_WS = 'wss://ytune.asktome.com.br/ws';
+  let roomId           = $state(null);
+  let roomRole         = $state(null);   // 'host' | 'member' | null
+  let memberCount      = $state(0);
+  let participants     = $state([]);     // [{role, username, avatarUrl}]
+  let showRoomInput    = $state(false);
+  let roomInputId      = $state('');
+  let trackUrl         = $state('');
+  let ws               = null;
+  let wsReconnectTimer = null;
+  let pendingSeekPos   = null;
+  let _lastPlayingSync = null; // last playing state applied by sync (debounce)
+
+  function extractVideoId(url) {
+    try { const m = url.match(/[?&]v=([^&]+)/); return m ? m[1] : url; } catch { return url; }
+  }
+
+  function applyRoomMsg(msg) {
+    roomId       = msg.roomId;
+    roomRole     = msg.role;
+    memberCount  = msg.memberCount ?? 0;
+    participants = msg.participants ?? [];
+    emit('ytune-room-status', msg);
+  }
+
   // ── Visualizer canvas ─────────────────────────────────────────────
   let vizCanvas = null; // set in onMount via querySelector — bind:this unreliable in runes mode
   let vizFrame;
@@ -315,6 +341,7 @@
 
   function vizTick() {
     try {
+      if (document.hidden) { vizFrame = requestAnimationFrame(vizTick); return; }
       vizPhase += 0.025;
       const hasRealData = rawBars.some(v => v > 0);
       if (hasRealData) {
@@ -375,8 +402,20 @@
     await restorePopupSize();
     window.addEventListener('resize', savePopupSize);
     window.addEventListener('focus', checkClipboard);
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'F12') invoke('open_devtools', { window: 'tray-popup' });
+    });
     checkClipboard();
     checkForUpdate();
+    invoke('get_auth_token').then(t => {
+      console.log('[ytune-room] auth token:', t ? 'present' : 'null');
+      if (t) connectWs(t); else wsStatus = 'no-token';
+    }).catch(() => { wsStatus = 'no-token'; });
+    // Also connect when token is restored from YTM localStorage (app restart case)
+    listen('ytune-auth-ready', (e) => {
+      const t = e.payload;
+      if (t) connectWs(t);
+    });
     if (bgViz === "cava" || bgViz === "spectrum") startViz();
     unlistenInstall = await listen("ytune-install-update", () => installUpdate());
     unlistenNav = await listen("ytune-navigating", () => {
@@ -445,10 +484,19 @@
       title     = newTitle;
       artist    = p.artist    || "";
       thumbnail = p.thumbnail || "";
+      if (p.trackUrl) trackUrl = p.trackUrl;
       // Use data URI when available; clears on song change, repopulates ~1s later
       if (songChanged) thumbnailData = "";
       if (p.thumbnailData) thumbnailData = p.thumbnailData;
       playing   = p.playing;
+      // Sync room: consume pending seek once player has loaded the new song (duration > 0 = metadata ready)
+      if (pendingSeekPos !== null && p.duration > 0) {
+        const pos = pendingSeekPos;
+        pendingSeekPos = null;
+        console.log('[ytune-room] player ready after nav, seeking to', pos);
+        setTimeout(() => invoke('player_seek', { position: pos }).catch(() => {}), 300);
+      }
+      wsSendState();
       if (!isVolAdjusting) volume = p.volume ?? volume;
       if (!songChanged) duration = newDur;
       shuffled   = p.shuffled   ?? false;
@@ -467,6 +515,8 @@
     unlistenViz?.();
     unlistenInstall?.();
     unlistenNav?.();
+    clearTimeout(wsReconnectTimer);
+    ws?.close();
     stopViz();
     clearTimeout(seekTimeout);
     clearTimeout(volTimeout);
@@ -516,6 +566,7 @@
   function toggleLinkInput() {
     showLinkInput = !showLinkInput;
     if (showLinkInput) {
+      showRoomInput = false;
       linkUrl = clipboardUrl;
       clipboardPollInterval = setInterval(async () => {
         const prev = clipboardUrl;
@@ -553,6 +604,120 @@
   function onLinkKeydown(e) {
     if (e.key === 'Enter') navigateUrl();
     if (e.key === 'Escape') { showLinkInput = false; linkUrl = ''; }
+  }
+
+  // ── WebSocket / room logic ────────────────────────────────────────
+  let wsStatus = $state('disconnected'); // 'disconnected' | 'connecting' | 'connected' | 'no-token'
+
+  function connectWs(token) {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    wsStatus = 'connecting';
+    console.log('[ytune-room] connecting to', BACKEND_WS);
+    ws = new WebSocket(`${BACKEND_WS}?token=${encodeURIComponent(token)}`);
+    ws.onopen  = () => {
+      wsStatus = 'connected';
+      console.log('[ytune-room] WS connected');
+      // If we were in a room as member, re-join automatically after reconnect
+      if (roomId && roomRole === 'member') {
+        console.log('[ytune-room] auto-rejoining room', roomId);
+        ws.send(JSON.stringify({ type: 'join_room', roomId }));
+      }
+    };
+    ws.onmessage = (e) => { try { handleWsMsg(JSON.parse(e.data)); } catch {} };
+    ws.onerror = (e) => { console.error('[ytune-room] WS error', e); };
+    ws.onclose   = (e) => {
+      wsStatus = 'disconnected';
+      console.log('[ytune-room] WS closed', e.code, e.reason);
+      ws = null;
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = setTimeout(async () => {
+        const t = await invoke('get_auth_token').catch(() => null);
+        if (t) connectWs(t); else wsStatus = 'no-token';
+      }, 5000);
+    };
+  }
+
+  function handleWsMsg(msg) {
+    console.log('[ytune-room] msg:', JSON.stringify(msg));
+    switch (msg.type) {
+      case 'room_created':
+      case 'room_joined':
+      case 'room_status':
+        applyRoomMsg(msg);
+        break;
+      case 'member_joined':
+      case 'member_left':
+        memberCount  = msg.count;
+        participants = msg.participants ?? participants;
+        emit('ytune-room-status', { roomId, role: roomRole, memberCount, participants });
+        break;
+      case 'sync':
+        console.log('[ytune-room] sync | role:', roomRole, '| msg.url:', msg.trackUrl, '| local url:', trackUrl, '| pos:', msg.position);
+        if (roomRole === 'member' && msg.trackUrl) {
+          const latency = (Date.now() - msg.ts) / 1000;
+          const pos = msg.position + (msg.playing ? latency : 0);
+          const sameVideo = extractVideoId(msg.trackUrl) === extractVideoId(trackUrl);
+          if (!sameVideo) {
+            if (pendingSeekPos !== null) {
+              // Already navigating — just update the target position
+              console.log('[ytune-room] sync: nav in progress, updating pendingSeek=', pos);
+              pendingSeekPos = pos;
+            } else {
+              console.log('[ytune-room] sync: navigating, pendingSeek=', pos);
+              pendingSeekPos = pos;
+              setTimeout(() => { if (pendingSeekPos !== null) { console.warn('[ytune-room] pendingSeek timeout, clearing'); pendingSeekPos = null; } }, 15000);
+              invoke('navigate_ytm', { url: msg.trackUrl })
+                .then(() => console.log('[ytune-room] navigate_ytm ok'))
+                .catch(e => { console.error('[ytune-room] navigate_ytm FAILED:', e); pendingSeekPos = null; });
+            }
+          } else { // same video
+            const drift = Math.abs(pos - currentTime);
+            if (drift > 3) {
+              console.log('[ytune-room] sync: drift', drift.toFixed(1), 's → seeking to', pos);
+              invoke('player_seek', { position: pos })
+                .then(() => console.log('[ytune-room] seek ok'))
+                .catch(e => console.error('[ytune-room] seek FAILED:', e));
+            }
+          }
+          // Pause/resume sync: only act if state changed and debounce prevents feedback
+          if (typeof msg.playing === 'boolean' && msg.playing !== _lastPlayingSync && msg.playing !== playing) {
+            _lastPlayingSync = msg.playing;
+            console.log('[ytune-room] sync: play state →', msg.playing);
+            invoke('player_control', { action: 'play_pause' }).catch(() => {});
+          }
+        }
+        break;
+      case 'room_dissolved':
+      case 'room_left':
+        roomId = null; roomRole = null; memberCount = 0;
+        emit('ytune-room-status', {});
+        break;
+    }
+  }
+
+  let _lastWsPayload = '';
+  function wsSendState() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (roomRole !== 'host') return;
+    if (!trackUrl) { console.log('[ytune-room] wsSendState: no trackUrl'); return; }
+    const payload = { type: 'state', trackUrl, position: Math.round(currentTime), playing, ts: Date.now() };
+    const key = trackUrl + '|' + payload.position + '|' + playing;
+    if (key === _lastWsPayload) return;
+    _lastWsPayload = key;
+    ws.send(JSON.stringify(payload));
+  }
+
+  function joinRoom() {
+    const id = roomInputId.trim().toUpperCase();
+    if (!id || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'join_room', roomId: id }));
+    showRoomInput = false;
+    roomInputId = '';
+  }
+
+  function leaveRoom() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'leave_room' }));
   }
 
   function onHeaderDrag(e) {
@@ -666,6 +831,12 @@
     <span class="brand">ytune</span>
     <div class="header-actions">
       {#if !showConfig}
+        <button onclick={() => { showRoomInput = !showRoomInput; if (showRoomInput) showLinkInput = false; }} class:active-link={showRoomInput || roomId} aria-label="Sync room" title="Sync room">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>
+          </svg>
+        </button>
         <button onclick={toggleLinkInput} class:active-link={showLinkInput} class:clip-ready={clipboardUrl && !showLinkInput} aria-label="Open URL" title="Open YouTube Music link">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
@@ -700,33 +871,90 @@
         </svg>
       </button>
     </div>
+
+    <!-- Transient input panels — overlaid below header, outside flex flow -->
+    <div class="panel-overlay">
+      {#if showRoomInput && !roomId}
+        {#if wsStatus === 'no-token'}
+          <div class="room-bar" style="background:rgba(255,69,58,0.12);border-color:rgba(255,69,58,0.3)">
+            <span class="room-info"><span style="opacity:.7">Sign in to ytune to use rooms</span></span>
+          </div>
+        {:else if wsStatus !== 'connected'}
+          <div class="room-bar" style="background:rgba(255,159,10,0.12);border-color:rgba(255,159,10,0.3)">
+            <span class="room-info"><span style="opacity:.7">Connecting to server… ({wsStatus})</span></span>
+          </div>
+        {:else}
+          <div class="link-bar">
+            <input
+              class="link-input"
+              type="text"
+              placeholder="Room ID (e.g. GUY4LX)"
+              bind:value={roomInputId}
+              onkeydown={(e) => { if (e.key === 'Enter') joinRoom(); if (e.key === 'Escape') showRoomInput = false; }}
+              autofocus
+            />
+            <button class="link-go" onclick={joinRoom} disabled={roomInputId.trim().length < 4} aria-label="Join">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+              </svg>
+            </button>
+          </div>
+          <button class="add-bot-btn" onclick={() => emit('ytune-open-url', 'https://discord.com/oauth2/authorize?client_id=1513965769199980634')}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028 14.09 14.09 0 001.226-1.994.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03z"/>
+            </svg>
+            Add bot to Discord
+          </button>
+        {/if}
+      {/if}
+      {#if showLinkInput}
+        <div class="link-bar">
+          <input
+            class="link-input"
+            type="url"
+            placeholder="Paste a YouTube Music link..."
+            bind:value={linkUrl}
+            onkeydown={onLinkKeydown}
+            autofocus
+          />
+          <button class="link-go" onclick={navigateUrl} disabled={!linkUrl.includes('music.youtube.com')} aria-label="Open">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+            </svg>
+          </button>
+        </div>
+      {/if}
+    </div>
   </header>
+
+  <!-- ── Room status bar ── -->
+  {#if roomId}
+    <div class="room-bar">
+      <span class="room-info">
+        {#if participants.length > 0}
+          <div class="room-avatars">
+            {#each participants as p, i}
+              <img class="room-avatar" src={p.avatarUrl} alt={p.username}
+                title="{p.role === 'host' ? '👑 ' : ''}{p.username}"
+                style="opacity:{Math.max(0.35, 1 - i * 0.2)}; margin-left:{i > 0 ? '-7px' : '0'}; z-index:{participants.length - i}" />
+            {/each}
+          </div>
+        {:else}
+          <span style="opacity:.5;font-size:10px">{roomRole === 'host' ? '📡' : '🎵'}</span>
+        {/if}
+        <strong>{roomId}</strong>
+        <span class="room-sub">{roomRole === 'host' ? 'host' : 'listening'}{memberCount > 0 ? ` · ${memberCount}` : ''}</span>
+      </span>
+      <button class="room-leave" onclick={leaveRoom} title="Leave room">✕</button>
+    </div>
+  {/if}
 
   <!-- ── Update banner ── -->
   {#if updateAvailable}
     <div class="update-banner">
-      <span>{updateInstalling ? 'Baixando atualização…' : `Atualização ${updateAvailable.version} disponível`}</span>
+      <span>{updateInstalling ? 'Downloading update…' : `Update ${updateAvailable.version} available`}</span>
       <button class="update-btn" onclick={installUpdate} disabled={updateInstalling}>
-        {updateInstalling ? '…' : 'Instalar'}
-      </button>
-    </div>
-  {/if}
-
-  <!-- ── URL input panel ── -->
-  {#if showLinkInput}
-    <div class="link-bar">
-      <input
-        class="link-input"
-        type="url"
-        placeholder="Colar link do YouTube Music..."
-        bind:value={linkUrl}
-        onkeydown={onLinkKeydown}
-        autofocus
-      />
-      <button class="link-go" onclick={navigateUrl} disabled={!linkUrl.includes('music.youtube.com')} aria-label="Open">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-        </svg>
+        {updateInstalling ? '…' : 'Install'}
       </button>
     </div>
   {/if}
@@ -1039,7 +1267,16 @@
   }
 
   /* Header */
-  header { display: flex; align-items: center; justify-content: space-between; }
+  header { display: flex; align-items: center; justify-content: space-between; position: relative; overflow: visible; }
+  .panel-overlay {
+    position: absolute;
+    top: calc(100% + 9px);
+    left: 0; right: 0;
+    z-index: 20;
+    display: flex; flex-direction: column; gap: 4px;
+    pointer-events: none;
+  }
+  .panel-overlay > * { pointer-events: auto; }
   .brand {
     font-size: 10px;
     font-weight: 700;
@@ -1062,6 +1299,40 @@
   .header-actions .active-link { color: var(--accent); }
   .header-actions .clip-ready  { color: var(--accent); opacity: 0.7; }
 
+  /* Room bar */
+  .room-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--accent-dim);
+    border-radius: 6px; border: 1px solid rgba(255,255,255,0.07);
+    padding: 2px 8px 2px 6px; font-size: 10px; color: rgba(255,255,255,0.85);
+    animation: panel-enter 80ms ease-out both;
+    flex-shrink: 0;
+  }
+  .room-info { display: flex; align-items: center; gap: 5px; min-width: 0; }
+  .room-info strong { color: var(--accent); letter-spacing: 0.04em; flex-shrink: 0; }
+  .room-sub { opacity: 0.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .room-leave {
+    background: none; border: none; color: rgba(255,255,255,0.35);
+    cursor: pointer; padding: 2px 2px 2px 6px; font-size: 10px; line-height: 1; flex-shrink: 0;
+  }
+  .room-leave:hover { color: #ff453a; }
+  .add-bot-btn {
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    width: 100%; padding: 5px 10px;
+    background: rgba(28,28,30,0.82); backdrop-filter: blur(14px);
+    border: 1px solid rgba(88, 101, 242, 0.35);
+    border-radius: 8px; color: rgba(255,255,255,0.55); font-size: 10px;
+    cursor: pointer; transition: background 0.15s, color 0.15s;
+  }
+  .add-bot-btn:hover { background: rgba(88, 101, 242, 0.25); color: rgba(255,255,255,0.9); }
+  .room-avatars { display: flex; align-items: center; }
+  .room-avatar {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 1.5px solid rgba(0,0,0,0.5);
+    object-fit: cover; flex-shrink: 0;
+    position: relative;
+  }
+
   /* Update banner */
   .update-banner {
     display: flex; align-items: center; justify-content: space-between;
@@ -1078,7 +1349,9 @@
   /* URL input bar */
   .link-bar {
     display: flex; align-items: center; gap: 6px;
-    background: rgba(255,255,255,0.06);
+    background: rgba(28,28,30,0.82);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,0.07);
     border-radius: 8px; padding: 4px 6px 4px 10px;
     animation: panel-enter 80ms ease-out both;
   }

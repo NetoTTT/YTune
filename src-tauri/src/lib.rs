@@ -171,6 +171,28 @@ pub fn run() {
                 let _ = handle_install.emit("ytune-install-update", ());
             });
 
+            let handle_restore = app.handle().clone();
+            app.listen("ytune-auth-restore", move |event| {
+                let token = serde_json::from_str::<String>(event.payload())
+                    .unwrap_or_else(|_| event.payload().trim_matches('"').to_string());
+                if token.is_empty() { return; }
+                if let Some(state) = handle_restore.try_state::<AuthTokenState>() {
+                    *state.0.lock().unwrap() = Some(token.clone());
+                }
+                // Notify popup so it can connect WS with the restored token
+                let _ = handle_restore.emit("ytune-auth-ready", token);
+            });
+
+            let handle_room = app.handle().clone();
+            app.listen("ytune-room-status", move |event| {
+                if let Some(main) = handle_room.get_webview_window("main") {
+                    let payload = event.payload();
+                    let _ = main.eval(&format!(
+                        "window.__ytune__?.setRoomStatus?.({payload})"
+                    ));
+                }
+            });
+
             let handle_state_req = app.handle().clone();
             app.listen("ytune-discord-state-request", move |_| {
                 let enabled = tray::discord_enabled_get(&handle_state_req);
@@ -224,6 +246,8 @@ pub fn run() {
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(4));
                     if let Some(w) = h.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
                         w.open_devtools();
                     }
                 });
@@ -291,6 +315,7 @@ pub fn run() {
             commands::set_popup_size,
             commands::navigate_ytm,
             commands::read_clipboard,
+            commands::open_devtools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
