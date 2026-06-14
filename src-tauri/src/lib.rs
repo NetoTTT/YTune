@@ -376,6 +376,8 @@ pub fn run() {
             commands::player_volume,
             commands::discord_get,
             commands::discord_set,
+            commands::discord_song_link_get,
+            commands::discord_song_link_set,
             commands::get_auth_token,
             commands::set_popup_size,
             commands::navigate_ytm,

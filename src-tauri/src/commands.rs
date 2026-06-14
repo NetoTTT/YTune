@@ -1,6 +1,8 @@
 use tauri::{Emitter, Runtime, Manager};
 use discord_rich_presence::DiscordIpc;
-use crate::tray::{monitor_at, discord_enabled_get, discord_enabled_set};
+use crate::tray::{monitor_at, discord_enabled_get, discord_enabled_set,
+    discord_song_link_get as tray_song_link_get,
+    discord_song_link_set as tray_song_link_set};
 
 #[tauri::command]
 pub fn discord_get<R: Runtime>(app: tauri::AppHandle<R>) -> bool {
@@ -22,6 +24,20 @@ pub fn discord_set<R: Runtime>(app: tauri::AppHandle<R>, enabled: bool) {
         let _ = main.eval(&format!("window.__ytune__?.setDiscordState?.({})", enabled));
     }
     let _ = app.emit("ytune-discord-state", enabled);
+}
+
+#[tauri::command]
+pub fn discord_song_link_get<R: Runtime>(app: tauri::AppHandle<R>) -> bool {
+    tray_song_link_get(&app)
+}
+
+#[tauri::command]
+pub fn discord_song_link_set<R: Runtime>(app: tauri::AppHandle<R>, enabled: bool) {
+    tray_song_link_set(&app, enabled);
+    // Force Discord to re-render on the next poll cycle
+    if let Some(ts) = app.try_state::<crate::DiscordTrackState>() {
+        ts.0.lock().unwrap().2 = 0;
+    }
 }
 
 #[tauri::command]

@@ -45,6 +45,24 @@ pub fn discord_enabled_set<R: Runtime>(app: &tauri::AppHandle<R>, enabled: bool)
     }
 }
 
+fn discord_song_link_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("discord_song_link"))
+}
+
+pub fn discord_song_link_get<R: Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    discord_song_link_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false)
+}
+
+pub fn discord_song_link_set<R: Runtime>(app: &tauri::AppHandle<R>, enabled: bool) {
+    if let Some(path) = discord_song_link_path(app) {
+        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        let _ = std::fs::write(path, if enabled { "true" } else { "false" });
+    }
+}
+
 fn save_popup_pos<R: Runtime>(app: &tauri::AppHandle<R>, popup: &tauri::WebviewWindow<R>) {
     let Ok(pos) = popup.outer_position() else { return };
     // Save physical pixels — unambiguous across monitors and DPI settings

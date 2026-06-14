@@ -79,6 +79,7 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
     let liked        = state["liked"].as_bool().unwrap_or(false);
     let current_time = state["currentTime"].as_f64().unwrap_or(0.0);
     let duration     = state["duration"].as_f64().unwrap_or(0.0);
+    let track_url    = state["trackUrl"].as_str().unwrap_or("").to_string();
     let thumbnail    = state["thumbnail"].as_str().unwrap_or("").to_string();
     let thumbnail_discord = state["thumbnailDiscord"].as_str()
         .filter(|s| !s.is_empty())
@@ -169,7 +170,7 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
                     act = act.timestamps(activity::Timestamps::new().start(start_ts));
                 }
 
-                // "Listen With Me" button — only when host enabled it
+                // Build buttons (Discord allows max 2)
                 let listen_url = app.try_state::<crate::RoomState>().and_then(|rs| {
                     let info = rs.0.lock().unwrap();
                     if info.listen_with_me && info.role.as_deref() == Some("host") {
@@ -178,8 +179,23 @@ pub fn handle_player_state(app: &tauri::AppHandle, payload: &str) {
                         })
                     } else { None }
                 });
+                let song_link_enabled = crate::tray::discord_song_link_get(app);
+                let song_url = if song_link_enabled && track_url.starts_with("https://") {
+                    Some(track_url.clone())
+                } else {
+                    None
+                };
+                println!("[discord] song_link_enabled={} track_url={:?} song_url={:?}",
+                    song_link_enabled, &track_url[..track_url.len().min(60)], song_url.as_deref().map(|u| &u[..u.len().min(60)]));
+                let mut buttons: Vec<activity::Button> = Vec::new();
                 if let Some(ref url) = listen_url {
-                    act = act.buttons(vec![activity::Button::new("Listen With Me", url)]);
+                    buttons.push(activity::Button::new("Listen With Me", url));
+                }
+                if let Some(ref url) = song_url {
+                    buttons.push(activity::Button::new("Open in YouTube Music", url));
+                }
+                if !buttons.is_empty() {
+                    act = act.buttons(buttons);
                 }
 
                 let result = client.set_activity(act);

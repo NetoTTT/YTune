@@ -39,6 +39,7 @@
   let showVolume  = $state(false);
   let showConfig      = $state(false);
   let discordEnabled  = $state(true);
+  let discordSongLink = $state(false);
   let queueThumbs     = $state(false);
   let autostart       = $state(false);
   let colorMode    = $state("dynamic"); // "dynamic" | "fixed"
@@ -407,8 +408,9 @@
       vizCanvas.height = window.innerHeight;
     }
     loadConfig();
-    discordEnabled = await invoke("discord_get").catch(() => true);
-    autostart      = await invoke("autostart_get").catch(() => false);
+    discordEnabled  = await invoke("discord_get").catch(() => true);
+    discordSongLink = await invoke("discord_song_link_get").catch(() => false);
+    autostart       = await invoke("autostart_get").catch(() => false);
     const initH = colorMode === "fixed" ? THEMES[fixedTheme].h : 280;
     const initS = colorMode === "fixed" ? THEMES[fixedTheme].s : 65;
     currentPalette = { h: initH, s: initS };
@@ -1155,6 +1157,13 @@
         <div class="mode-row">
           <button class="mode-btn" class:mode-active={discordEnabled}  onclick={toggleDiscord}>On</button>
           <button class="mode-btn" class:mode-active={!discordEnabled} onclick={toggleDiscord}>Off</button>
+        </div>
+      </div>
+      <div class="cfg-section">
+        <p class="cfg-label">Song link in presence</p>
+        <div class="mode-row">
+          <button class="mode-btn" class:mode-active={discordSongLink}  onclick={() => { discordSongLink = true;  invoke('discord_song_link_set', { enabled: true }); }}>On</button>
+          <button class="mode-btn" class:mode-active={!discordSongLink} onclick={() => { discordSongLink = false; invoke('discord_song_link_set', { enabled: false }); }}>Off</button>
         </div>
       </div>
       <div class="cfg-section">
